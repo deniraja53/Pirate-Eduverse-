@@ -1,0 +1,6 @@
+{
+  "name": "Pirate Academy: Treasure Quest",
+  "description": "Game edukasi petualangan bajak laut 3D interaktif untuk siswa sekolah dasar karya Deni Raja99 dengan sistem peti soal, dashboard guru, ekstraksi PDF, dan integrasi Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+    overflow: hidden;
+    background-color: #0b192c;
+    color: #f1f5f9;
+  }
+
+  h1, h2, h3, .font-pirate {
+    font-family: 'Pirata One', 'Cinzel', cursive;
+    letter-spacing: 0.05em;
+  }
+
+  .font-cinzel {
+    font-family: 'Cinzel', serif;
+  }
+}
+
+/* Custom scrollbar for Question Panel & Modals */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(45, 26, 14, 0.15);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(180, 83, 9, 0.6);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(180, 83, 9, 0.85);
+}
+
+@keyframes floatAnim {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-8px); }
+}
+
+.animate-float {
+  animation: floatAnim 3s ease-in-out infinite;
+}
+
+/* HTML: <div class="loader"></div> */
+.loader {
+  width: fit-content;
+  font-weight: bold;
+  font-family: monospace;
+  font-size: 30px;
+  line-height: 1.2em;
+  height: 1.2em;
+  overflow: hidden;
+}
+.loader:before {
+  content: "Loading...\A⌰oading...\A⌰⍜ading...\A⌰⍜⏃ding...\A⌰⍜⏃⎅ing...\A⌰⍜⏃⎅⟟ng...\A⌰⍜⏃⎅⟟⋏g...\A⌰⍜⏃⎅⟟⋏☌...\A⌰⍜⏃⎅⟟⋏☌.\A⌰⍜⏃⎅⟟⋏☌..\A⌰⍜⏃⎅⟟⋏☌...";
+  white-space: pre;
+  display: inline-block;
+  animation: l39 1s infinite steps(11) alternate;
+}
+@keyframes l39 {
+  100% {
+    transform: translateY(-100%);
+  }
+}
+
