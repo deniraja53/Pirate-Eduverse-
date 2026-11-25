@@ -28,6 +28,8 @@ import {
 interface LoginScreenProps {
   activePackage: QuestionPackage | null;
   quizLoadError?: string;
+  quizFetchState?: 'loading' | 'ready' | 'empty' | 'error';
+  onRetryLoadQuiz?: () => void;
   isStarting?: boolean;
   initialName?: string;
   initialGrade?: string;
@@ -40,6 +42,8 @@ interface LoginScreenProps {
 export const LoginScreen: React.FC<LoginScreenProps> = ({
   activePackage,
   quizLoadError,
+  quizFetchState = activePackage ? 'ready' : 'empty',
+  onRetryLoadQuiz,
   isStarting,
   initialName = '',
   initialGrade,
@@ -197,7 +201,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
             </div>
           </div>
 
-          {/* Active Published Quiz Notice or Honest Empty Error */}
+          {/* Active Published Quiz Notice, Confirmed Empty Quiz, or Server/API Error */}
           {activePackage ? (
             <div className="p-3 bg-emerald-950/65 border border-emerald-500/45 rounded-xl text-xs text-emerald-200">
               <div className="font-bold text-emerald-300">
@@ -207,15 +211,41 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
                 {activePackage.questions.length} Peti Soal · {activePackage.gradeLevel}
               </div>
             </div>
-          ) : (
-            <div className="p-3 bg-red-950/80 border border-red-500/70 text-red-200 rounded-xl text-xs space-y-1.5">
-              <div className="font-bold text-red-300">
+          ) : quizFetchState === 'loading' ? (
+            <div className="p-3 bg-slate-900/80 border border-amber-500/40 text-amber-200 rounded-xl text-xs">
+              Memeriksa paket soal aktif dari server...
+            </div>
+          ) : quizFetchState === 'empty' ? (
+            <div className="p-3 bg-amber-950/75 border border-amber-500/60 text-amber-100 rounded-xl text-xs space-y-1.5">
+              <div className="font-bold text-amber-300">
                 Belum Ada Kuis Aktif yang Diterbitkan Guru
               </div>
-              <p className="text-[11px] leading-relaxed">
+              <p className="text-[11px] leading-relaxed text-amber-100/90">
                 {quizLoadError ||
                   'Portal Guru belum menerbitkan paket soal aktif. Hubungi guru untuk menerbitkan soal melalui Portal Guru.'}
               </p>
+            </div>
+          ) : (
+            <div className="p-3 bg-red-950/80 border border-red-500/70 text-red-200 rounded-xl text-xs space-y-2">
+              <div className="font-bold text-red-300">
+                Gangguan Koneksi ke Server Kuis
+              </div>
+              <p className="text-[11px] leading-relaxed">
+                {quizLoadError ||
+                  'Gagal terhubung ke endpoint kuis server. Periksa apakah backend server berjalan atau coba muat ulang.'}
+              </p>
+              {onRetryLoadQuiz && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    sounds.playClick();
+                    onRetryLoadQuiz();
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-400/60 text-red-100 text-[11px] font-bold cursor-pointer transition-colors"
+                >
+                  Muat Ulang Kuis
+                </button>
+              )}
             </div>
           )}
 

@@ -60,6 +60,7 @@ export default function App() {
   // Active published question package from backend (null if none published)
   const [questionPackage, setQuestionPackage] = useState<QuestionPackage | null>(null);
   const [quizLoadError, setQuizLoadError] = useState<string>('');
+  const [quizFetchState, setQuizFetchState] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
   const [isStartingSession, setIsStartingSession] = useState(false);
 
   // Loading & Pending Student State (Biodata -> Loading -> 3D Game)
@@ -112,20 +113,31 @@ export default function App() {
   const [jumpTrigger, setJumpTrigger] = useState<number>(0);
 
   const loadActivePackageFromServer = useCallback(async () => {
+    setQuizFetchState((prev) => (prev === 'ready' ? 'ready' : 'loading'));
     try {
       const res = await fetchActiveQuiz();
-      if (res.success && res.activePackage) {
+      if (res.serverConfirmed && res.hasActiveQuiz && res.activePackage) {
         setQuestionPackage(res.activePackage);
         setQuizLoadError('');
-      } else {
+        setQuizFetchState('ready');
+      } else if (res.serverConfirmed && !res.hasActiveQuiz) {
         setQuestionPackage(null);
         setQuizLoadError(
           res.message ||
             'Belum ada paket soal aktif yang diterbitkan oleh guru. Silakan buka Portal Guru untuk menerbitkan kuis.'
         );
+        setQuizFetchState('empty');
+      } else {
+        setQuestionPackage(null);
+        setQuizLoadError(
+          res.message || 'Gagal memuat paket soal aktif dari server API.'
+        );
+        setQuizFetchState('error');
       }
     } catch {
-      setQuizLoadError('Gagal memuat paket soal aktif dari server.');
+      setQuestionPackage(null);
+      setQuizLoadError('Tidak dapat terhubung ke server API untuk memuat paket soal aktif.');
+      setQuizFetchState('error');
     }
   }, []);
 
@@ -258,6 +270,7 @@ export default function App() {
         if (viewRef.current !== 'game' && viewRef.current !== 'loading') {
           setQuestionPackage(evt.payload);
           setQuizLoadError('');
+          setQuizFetchState('ready');
         }
       } else if (evt.type === 'session:updated') {
         setCurrentSession((prev) =>
@@ -619,6 +632,8 @@ export default function App() {
         <LoginScreen
           activePackage={questionPackage}
           quizLoadError={quizLoadError}
+          quizFetchState={quizFetchState}
+          onRetryLoadQuiz={() => void loadActivePackageFromServer()}
           isStarting={isStartingSession}
           initialName={pendingStudent?.name}
           initialGrade={pendingStudent?.grade}

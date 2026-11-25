@@ -306,6 +306,253 @@ export function deduplicateQuestions(questions: Question[]): {
 let dbState: DatabaseState | null = null;
 const teacherTokens = new Map<string, number>();
 
+const DISALLOWED_WEAK_PINS = new Set([
+  'guru123',
+  '1234',
+  '12345',
+  '123456',
+  '0000',
+  '000000',
+  '111111',
+  'admin',
+  'admin123',
+  'password',
+]);
+
+function sha256Buffer(value: string): Buffer {
+  return crypto.createHash('sha256').update(value, 'utf8').digest();
+}
+
+export function sha256Hex(value: string): string {
+  return crypto.createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+export function constantTimeEqual(a: string, b: string): boolean {
+  const bufA = sha256Buffer(a);
+  const bufB = sha256Buffer(b);
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+export function hashTeacherPin(pin: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(pin, salt, 64);
+  return `scrypt$${salt}$${derived.toString('hex')}`;
+}
+
+export function verifyTeacherPinHash(pin: string, storedHash: string): boolean {
+  const parts = storedHash.split('$');
+  if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
+  const [, salt, hashHex] = parts;
+  if (!salt || !hashHex) return false;
+  try {
+    const expected = Buffer.from(hashHex, 'hex');
+    const actual = crypto.scryptSync(pin, salt, expected.length);
+    if (actual.length !== expected.length) return false;
+    return crypto.timingSafeEqual(actual, expected);
+  } catch {
+    return false;
+  }
+}
+
+export function validateTeacherPinPolicy(rawPin: unknown): {
+  valid: boolean;
+  pin?: string;
+  message?: string;
+} {
+  if (typeof rawPin !== 'string') {
+    return { valid: false, message: 'PIN guru wajib berupa teks.' };
+  }
+  const trimmed = rawPin.trim();
+  if (trimmed.length < 6) {
+    return {
+      valid: false,
+      message: 'PIN guru minimal 6 karakter demi keamanan Portal Guru.',
+    };
+  }
+  if (trimmed.length > 64) {
+    return {
+      valid: false,
+      message: 'PIN guru maksimal 64 karakter.',
+    };
+  }
+  if (DISALLOWED_WEAK_PINS.has(trimmed.toLowerCase())) {
+    return {
+      valid: false,
+      message: 'PIN terlalu umum atau merupakan default lama. Gunakan kombinasi PIN yang kuat dan unik.',
+    };
+  }
+  return { valid: true, pin: trimmed };
+}
+
+export interface TeacherAuthStatus {
+  pinConfigured: boolean;
+  requiresInitialSetup: boolean;
+  setupSecretConfigured: boolean;
+  setupSecretConsumed: boolean;
+  pinManagedByEnv: boolean;
+}
+
+export function getTeacherAuthStatus(): TeacherAuthStatus {
+  const db = loadDatabase();
+  const envPin = (process.env.TEACHER_PIN || '').trim();
+  const envPinHash = (process.env.TEACHER_PIN_HASH || '').trim();
+  const envPinConfigured = Boolean(envPin || envPinHash);
+  const dbPinConfigured = Boolean(db.settings.pinHash);
+  const pinConfigured = envPinConfigured || dbPinConfigured;
+
+  const setupSecret = (process.env.TEACHER_SETUP_SECRET || '').trim();
+  const setupDigest = setupSecret ? sha256Hex(setupSecret) : '';
+  const consumedList = Array.isArray(db.settings.consumedSetupSecretDigests)
+    ? db.settings.consumedSetupSecretDigests
+    : [];
+  const setupSecretConsumed = Boolean(setupDigest && consumedList.includes(setupDigest));
+  const setupSecretConfigured = Boolean(setupSecret) && !setupSecretConsumed && !pinConfigured;
+
+  return {
+    pinConfigured,
+    requiresInitialSetup: !pinConfigured,
+    setupSecretConfigured,
+    setupSecretConsumed,
+    pinManagedByEnv: envPinConfigured,
+  };
+}
+
+export function verifyTeacherLoginPin(candidatePin: string): boolean {
+  const trimmed = candidatePin.trim();
+  if (!trimmed) return false;
+
+  const envPin = (process.env.TEACHER_PIN || '').trim();
+  if (envPin) {
+    return constantTimeEqual(trimmed, envPin);
+  }
+
+  const envPinHash = (process.env.TEACHER_PIN_HASH || '').trim();
+  if (envPinHash) {
+    return verifyTeacherPinHash(trimmed, envPinHash);
+  }
+
+  const db = loadDatabase();
+  if (!db.settings.pinHash) {
+    return false;
+  }
+  return verifyTeacherPinHash(trimmed, db.settings.pinHash);
+}
+
+export function setupInitialTeacherPinWithSecret(
+  setupSecretInput: string,
+  newPinInput: string
+): {
+  success: boolean;
+  status: number;
+  message: string;
+} {
+  const authStatus = getTeacherAuthStatus();
+  if (authStatus.pinConfigured) {
+    return {
+      success: false,
+      status: 403,
+      message:
+        'PIN guru sudah dikonfigurasi. Setup awal otomatis dikunci; gunakan PIN yang sudah ada untuk masuk atau mengubah PIN di Pengaturan.',
+    };
+  }
+
+  const configuredSecret = (process.env.TEACHER_SETUP_SECRET || '').trim();
+  if (!configuredSecret) {
+    return {
+      success: false,
+      status: 503,
+      message:
+        'Secret setup awal (TEACHER_SETUP_SECRET) belum diatur pada environment server. Konfigurasikan TEACHER_SETUP_SECRET atau TEACHER_PIN di Secrets server terlebih dahulu.',
+    };
+  }
+
+  const db = loadDatabase();
+  const secretDigest = sha256Hex(configuredSecret);
+  const consumed = Array.isArray(db.settings.consumedSetupSecretDigests)
+    ? db.settings.consumedSetupSecretDigests
+    : [];
+
+  if (consumed.includes(secretDigest) || db.settings.setupSecretConsumedAt) {
+    return {
+      success: false,
+      status: 403,
+      message:
+        'Secret setup awal ini sudah pernah digunakan dan dinonaktifkan. Rotasi TEACHER_SETUP_SECRET di server jika perlu setup ulang.',
+    };
+  }
+
+  if (!setupSecretInput.trim() || !constantTimeEqual(setupSecretInput.trim(), configuredSecret)) {
+    return {
+      success: false,
+      status: 401,
+      message: 'Secret setup awal tidak valid.',
+    };
+  }
+
+  const pinPolicy = validateTeacherPinPolicy(newPinInput);
+  if (!pinPolicy.valid || !pinPolicy.pin) {
+    return {
+      success: false,
+      status: 400,
+      message: pinPolicy.message || 'PIN tidak memenuhi syarat.',
+    };
+  }
+
+  const now = new Date().toISOString();
+  db.settings.pinHash = hashTeacherPin(pinPolicy.pin);
+  delete db.settings.pin;
+  db.settings.pinSetupCompletedAt = now;
+  db.settings.pinUpdatedAt = now;
+  db.settings.setupSecretConsumedAt = now;
+  db.settings.consumedSetupSecretDigests = [...consumed, secretDigest];
+  saveDatabase();
+
+  recordDashboardActivity({
+    category: 'settings',
+    status: 'success',
+    title: 'PIN Awal Portal Guru Ditetapkan',
+    detail: 'PIN guru disimpan terenkripsi (scrypt hash) dan secret setup satu kali telah dinonaktifkan.',
+  });
+
+  return {
+    success: true,
+    status: 200,
+    message: 'PIN Portal Guru berhasil ditetapkan secara aman. Silakan login menggunakan PIN baru Anda.',
+  };
+}
+
+export function updateTeacherPinSecurely(newPinInput: string): {
+  success: boolean;
+  message: string;
+} {
+  if ((process.env.TEACHER_PIN || '').trim() || (process.env.TEACHER_PIN_HASH || '').trim()) {
+    return {
+      success: false,
+      message:
+        'PIN saat ini dikelola melalui Secret server (TEACHER_PIN). Ubah variabel environment TEACHER_PIN di dashboard hosting Anda.',
+    };
+  }
+
+  const policy = validateTeacherPinPolicy(newPinInput);
+  if (!policy.valid || !policy.pin) {
+    return {
+      success: false,
+      message: policy.message || 'PIN baru tidak valid.',
+    };
+  }
+
+  const db = loadDatabase();
+  db.settings.pinHash = hashTeacherPin(policy.pin);
+  delete db.settings.pin;
+  db.settings.pinUpdatedAt = new Date().toISOString();
+  saveDatabase();
+
+  return {
+    success: true,
+    message: 'PIN Portal Guru berhasil diperbarui (tersimpan sebagai hash scrypt).',
+  };
+}
+
 export function issueTeacherToken(): string {
   const token = crypto.randomBytes(24).toString('hex');
   teacherTokens.set(token, Date.now() + 1000 * 60 * 60 * 12); // 12 hours
@@ -341,6 +588,17 @@ export function loadDatabase(): DatabaseState {
         }
         if (!Array.isArray(parsed.activities)) {
           parsed.activities = [];
+          repaired = true;
+        }
+
+        // Security migration: strip plaintext legacy 'pin' field; never preserve default 'guru123'
+        if (typeof parsed.settings.pin === 'string') {
+          const legacyPin = parsed.settings.pin.trim();
+          if (!parsed.settings.pinHash && legacyPin && legacyPin !== 'guru123') {
+            parsed.settings.pinHash = hashTeacherPin(legacyPin);
+            parsed.settings.pinUpdatedAt = new Date().toISOString();
+          }
+          delete parsed.settings.pin;
           repaired = true;
         }
 
@@ -423,7 +681,6 @@ export function loadDatabase(): DatabaseState {
     packages: defaultPackages,
     sessions: [],
     settings: {
-      pin: process.env.TEACHER_PIN || 'guru123',
       googleSheetsWebAppUrl: process.env.GOOGLE_SHEETS_WEBAPP_URL || '',
       spreadsheetIdOrUrl: '',
       autoSyncSheets: true,

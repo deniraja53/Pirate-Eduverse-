@@ -65,6 +65,7 @@ import { GOOGLE_APPS_SCRIPT_CODE, testSheetsConnection } from '../services/sheet
 import {
   connectRealtimeWs,
   deleteTeacherPackageApi,
+  fetchTeacherAuthStatusApi,
   fetchTeacherOverviewApi,
   fetchTeacherPackagesApi,
   fetchTeacherSessionsApi,
@@ -75,8 +76,10 @@ import {
   retrySessionSheetsSyncApi,
   saveTeacherPackageApi,
   setTeacherToken,
+  setupInitialTeacherPinApi,
   syncPackageToSheetsApi,
   updateTeacherSettingsApi,
+  type TeacherAuthStatusDto,
   type TeacherSettingsDto,
 } from '../services/apiClient';
 import {
@@ -164,9 +167,20 @@ function getPackageStatusBadge(
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBackToGame }) => {
   // Auth state
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(Boolean(getTeacherToken()));
+  const [authStatus, setAuthStatus] = useState<TeacherAuthStatusDto | null>(null);
+  const [authStatusError, setAuthStatusError] = useState('');
+  const [isLoadingAuthStatus, setIsLoadingAuthStatus] = useState<boolean>(!getTeacherToken());
   const [enteredPin, setEnteredPin] = useState('');
   const [pinError, setPinError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Initial PIN setup state (admin-secret-gated)
+  const [setupSecretInput, setSetupSecretInput] = useState('');
+  const [setupPinInput, setSetupPinInput] = useState('');
+  const [setupPinConfirmInput, setSetupPinConfirmInput] = useState('');
+  const [setupError, setSetupError] = useState('');
+  const [setupSuccessMessage, setSetupSuccessMessage] = useState('');
+  const [isSubmittingSetup, setIsSubmittingSetup] = useState(false);
 
   // Core data state
   const [packages, setPackages] = useState<QuestionPackage[]>([]);
@@ -342,11 +356,39 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBackToGame
     return disconnect;
   }, [isAuthenticated]);
 
+  const refreshAuthStatus = useCallback(async () => {
+    setIsLoadingAuthStatus(true);
+    setAuthStatusError('');
+    try {
+      const res = await fetchTeacherAuthStatusApi();
+      if (res.success && res.authStatus) {
+        setAuthStatus(res.authStatus);
+      } else {
+        setAuthStatus(null);
+        setAuthStatusError(
+          res.message || 'Gagal memeriksa status autentikasi Portal Guru dari server API.'
+        );
+      }
+    } catch {
+      setAuthStatus(null);
+      setAuthStatusError('Tidak dapat terhubung ke server API Portal Guru.');
+    } finally {
+      setIsLoadingAuthStatus(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      void refreshAuthStatus();
+    }
+  }, [isAuthenticated, refreshAuthStatus]);
+
   const handlePinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isLoggingIn || !enteredPin.trim()) return;
     setIsLoggingIn(true);
     setPinError('');
+    setSetupSuccessMessage('');
 
     try {
       const res = await loginTeacherApi(enteredPin.trim());
@@ -356,6 +398,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBackToGame
         sounds.playClick();
       } else {
         setPinError(res.message || 'PIN salah! Silakan coba lagi.');
+        if (res.requiresInitialSetup) {
+          void refreshAuthStatus();
+        }
         sounds.playWrong();
       }
     } catch {
@@ -363,6 +408,60 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBackToGame
       sounds.playWrong();
     } finally {
       setIsLoggingIn(false);
+    }
+  };
+
+  const handleInitialSetupSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmittingSetup) return;
+
+    const cleanSecret = setupSecretInput.trim();
+    const cleanPin = setupPinInput.trim();
+    const cleanConfirm = setupPinConfirmInput.trim();
+
+    if (!cleanSecret) {
+      setSetupError('Masukkan Secret Setup Server (TEACHER_SETUP_SECRET).');
+      return;
+    }
+    if (cleanPin.length < 6) {
+      setSetupError('PIN Guru baru minimal 6 karakter.');
+      return;
+    }
+    if (cleanPin !== cleanConfirm) {
+      setSetupError('Konfirmasi PIN Guru tidak cocok.');
+      return;
+    }
+
+    setIsSubmittingSetup(true);
+    setSetupError('');
+
+    try {
+      const res = await setupInitialTeacherPinApi(cleanSecret, cleanPin);
+      if (res.success) {
+        setSetupSecretInput('');
+        setSetupPinInput('');
+        setSetupPinConfirmInput('');
+        setSetupSuccessMessage(
+          res.message || 'PIN Portal Guru berhasil ditetapkan! Silakan masuk menggunakan PIN baru Anda.'
+        );
+        if (res.authStatus) {
+          setAuthStatus(res.authStatus);
+        } else {
+          await refreshAuthStatus();
+        }
+        sounds.playCorrect();
+      } else {
+        setSetupError(res.message || 'Gagal menetapkan PIN awal Portal Guru.');
+        if (res.authStatus) {
+          setAuthStatus(res.authStatus);
+        }
+        sounds.playWrong();
+      }
+    } catch {
+      setSetupError('Gagal terhubung ke server untuk setup PIN awal.');
+      sounds.playWrong();
+    } finally {
+      setIsSubmittingSetup(false);
     }
   };
 
@@ -555,6 +654,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBackToGame
   const handleSaveIntegrationSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSavingSettings) return;
+
+    const trimmedNewPin = newPinInput.trim();
+    if (trimmedNewPin.length > 0 && trimmedNewPin.length < 6) {
+      sounds.playWrong();
+      setBannerNotice({
+        type: 'error',
+        text: 'PIN Portal Guru baru minimal 6 karakter dan jangan gunakan PIN default yang lemah.',
+      });
+      return;
+    }
+
     setIsSavingSettings(true);
     try {
       const res = await updateTeacherSettingsApi({
@@ -562,7 +672,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBackToGame
         spreadsheetIdOrUrl: spreadsheetIdOrUrl.trim(),
         sheetsSharedSecret: sheetsSharedSecretInput.trim() || undefined,
         autoSyncSheets,
-        newPin: newPinInput.trim().length >= 4 ? newPinInput.trim() : undefined,
+        newPin: trimmedNewPin.length >= 6 ? trimmedNewPin : undefined,
       });
 
       if (res.success && res.settings) {
@@ -774,9 +884,185 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBackToGame
   };
 
   // ========================
-  // 1. PIXEL ART PIN GATE
+  // 1. PIXEL ART PIN GATE & SECURE INITIAL SETUP
   // ========================
   if (!isAuthenticated) {
+    if (isLoadingAuthStatus && !authStatus && !authStatusError) {
+      return (
+        <div className="pixel-portal relative w-full h-screen overflow-y-auto flex items-center justify-center p-4">
+          <div className="px-card-gold w-full max-w-md p-6 sm:p-8 text-center space-y-4">
+            <div className="w-16 h-16 bg-[#7c3aed] border-2 border-[#facc15] shadow-[4px_4px_0px_#0a0414] mx-auto flex items-center justify-center">
+              <Shield className="w-8 h-8 text-[#facc15] animate-pulse" />
+            </div>
+            <h2 className="text-lg font-bold text-[#facc15]">
+              PORTAL GURU PIRATE ACADEMY
+            </h2>
+            <p className="text-xs text-[#cbb7eb]">
+              Memeriksa status autentikasi Portal Guru dari server...
+            </p>
+            <button
+              type="button"
+              onClick={onBackToGame}
+              className="px-btn px-btn-dark w-full py-2 text-xs cursor-pointer"
+            >
+              &larr; Kembali ke Layar Siswa
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (authStatusError && !authStatus) {
+      return (
+        <div className="pixel-portal relative w-full h-screen overflow-y-auto flex items-center justify-center p-4">
+          <div className="px-card-gold w-full max-w-md p-6 sm:p-8 text-center space-y-5">
+            <div className="w-16 h-16 bg-red-950 border-2 border-[#ef4444] shadow-[4px_4px_0px_#0a0414] mx-auto flex items-center justify-center">
+              <AlertTriangle className="w-8 h-8 text-[#fca5a5]" />
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-lg font-bold text-[#fca5a5]">
+                GAGAL TERHUBUNG KE API PORTAL GURU
+              </h2>
+              <p className="text-xs text-[#cbb7eb] leading-relaxed">{authStatusError}</p>
+            </div>
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={() => void refreshAuthStatus()}
+                className="px-btn px-btn-gold w-full py-2.5 text-xs uppercase cursor-pointer"
+              >
+                Periksa Ulang Koneksi API
+              </button>
+              <button
+                type="button"
+                onClick={onBackToGame}
+                className="px-btn px-btn-dark w-full py-2 text-xs cursor-pointer"
+              >
+                &larr; Kembali ke Layar Siswa
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (authStatus && authStatus.requiresInitialSetup) {
+      return (
+        <div className="pixel-portal relative w-full h-screen overflow-y-auto flex items-center justify-center p-4">
+          <div className="px-card-gold w-full max-w-md p-6 sm:p-8 text-center space-y-5">
+            <div className="w-16 h-16 bg-[#7c3aed] border-2 border-[#facc15] shadow-[4px_4px_0px_#0a0414] mx-auto flex items-center justify-center">
+              <Key className="w-8 h-8 text-[#facc15]" />
+            </div>
+
+            <div className="space-y-2">
+              <h2 className="text-lg sm:text-xl font-bold text-[#facc15]">
+                SETUP AWAL PIN PORTAL GURU
+              </h2>
+              <p className="text-xs text-[#cbb7eb] leading-relaxed">
+                PIN Portal Guru belum ditetapkan. Demi keamanan deployment publik, aktivasi PIN awal hanya dapat dilakukan oleh administrator menggunakan secret server.
+              </p>
+            </div>
+
+            {!authStatus.setupSecretConfigured ? (
+              <div className="text-left space-y-3 bg-[#1b102d] border-2 border-[#facc15]/60 p-4 text-xs">
+                <div className="font-bold text-[#facc15]">
+                  Secret Setup Server Belum Dikonfigurasi
+                </div>
+                <p className="text-[#cbb7eb] leading-relaxed">
+                  {authStatus.setupSecretConsumed
+                    ? 'Secret setup sebelumnya sudah pernah dipakai dan dikunci. Atur nilai baru pada environment server jika ingin mengulang setup.'
+                    : 'Tidak ada tombol pembuatan PIN publik tanpa otorisasi server.'}
+                </p>
+                <div className="bg-[#0e071a] border border-[#6d28d9] p-3 font-mono text-[11px] text-[#e9d5ff] space-y-1">
+                  <div>1. Buka panel Secrets / Env Vars hosting (AI Studio / Cloud Run).</div>
+                  <div>2. Tambahkan <strong>TEACHER_SETUP_SECRET</strong> (untuk setup satu kali) atau <strong>TEACHER_PIN</strong> (min. 6 karakter untuk PIN permanen).</div>
+                  <div>3. Restart layanan lalu muat ulang halaman ini.</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void refreshAuthStatus()}
+                  className="px-btn px-btn-gold w-full py-2.5 text-xs uppercase cursor-pointer"
+                >
+                  Periksa Ulang Status Server
+                </button>
+                <button
+                  type="button"
+                  onClick={onBackToGame}
+                  className="px-btn px-btn-dark w-full py-2 text-xs cursor-pointer"
+                >
+                  &larr; Kembali ke Layar Siswa
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleInitialSetupSubmit} className="space-y-3.5 text-left">
+                <div>
+                  <label className="block text-[11px] font-bold text-[#facc15] mb-1">
+                    Secret Setup Server (TEACHER_SETUP_SECRET):
+                  </label>
+                  <input
+                    type="password"
+                    value={setupSecretInput}
+                    onChange={(e) => setSetupSecretInput(e.target.value)}
+                    placeholder="Masukkan TEACHER_SETUP_SECRET"
+                    className="px-input w-full px-3 py-2.5 text-xs font-mono text-[#facc15]"
+                    autoFocus
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-[#facc15] mb-1">
+                    PIN Guru Baru (minimal 6 karakter):
+                  </label>
+                  <input
+                    type="password"
+                    value={setupPinInput}
+                    onChange={(e) => setSetupPinInput(e.target.value)}
+                    placeholder="Buat PIN kuat (min. 6 karakter)"
+                    className="px-input w-full px-3 py-2.5 text-sm font-bold tracking-wider text-[#facc15]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-[#facc15] mb-1">
+                    Konfirmasi PIN Guru Baru:
+                  </label>
+                  <input
+                    type="password"
+                    value={setupPinConfirmInput}
+                    onChange={(e) => setSetupPinConfirmInput(e.target.value)}
+                    placeholder="Ulangi PIN baru"
+                    className="px-input w-full px-3 py-2.5 text-sm font-bold tracking-wider text-[#facc15]"
+                  />
+                </div>
+
+                {setupError && (
+                  <div className="p-2.5 bg-red-950/90 border-2 border-[#ef4444] text-red-200 text-xs font-bold">
+                    {setupError}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isSubmittingSetup}
+                  className="px-btn px-btn-gold w-full py-3 px-4 text-xs sm:text-sm uppercase cursor-pointer"
+                >
+                  {isSubmittingSetup ? 'Menyimpan PIN Aman...' : 'Tetapkan PIN Guru Awal'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={onBackToGame}
+                  className="px-btn px-btn-dark w-full py-2 text-xs cursor-pointer"
+                >
+                  &larr; Kembali ke Layar Siswa
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="pixel-portal relative w-full h-screen overflow-y-auto flex items-center justify-center p-4">
         <div className="px-card-gold w-full max-w-md p-6 sm:p-8 text-center space-y-5">
@@ -792,6 +1078,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBackToGame
               Masukkan PIN guru untuk mengelola Bank Soal, Impor PDF/Word/Drive, Editor Gambar Soal, Sinkronisasi Game 3D, dan Google Sheets.
             </p>
           </div>
+
+          {setupSuccessMessage && (
+            <div className="p-2.5 bg-emerald-950/90 border-2 border-[#22c55e] text-emerald-200 text-xs font-bold">
+              {setupSuccessMessage}
+            </div>
+          )}
 
           <form onSubmit={handlePinSubmit} className="space-y-4">
             <input
@@ -2103,15 +2395,21 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ onBackToGame
 
                 <div className="pt-2 border-t border-[#4c1d95]">
                   <label className="block font-bold text-[#cbb7eb] mb-1">
-                    Ubah PIN Portal Guru (minimal 4 karakter):
+                    Ubah PIN Portal Guru (minimal 6 karakter, disimpan terenkripsi):
                   </label>
-                  <input
-                    type="password"
-                    value={newPinInput}
-                    onChange={(e) => setNewPinInput(e.target.value)}
-                    placeholder="Kosongkan jika tidak ingin mengubah PIN"
-                    className="px-input w-full px-3 py-2 text-xs"
-                  />
+                  {settingsDto?.pinManagedByEnv ? (
+                    <div className="px-subcard p-2.5 text-[11px] text-[#4ade80]">
+                      PIN saat ini dikelola melalui Secret server (<code>TEACHER_PIN</code>) sehingga tetap persisten saat container restart. Ubah nilai <code>TEACHER_PIN</code> di panel Secrets hosting jika ingin mengganti PIN.
+                    </div>
+                  ) : (
+                    <input
+                      type="password"
+                      value={newPinInput}
+                      onChange={(e) => setNewPinInput(e.target.value)}
+                      placeholder="Kosongkan jika tidak ingin mengubah PIN (min. 6 karakter)"
+                      className="px-input w-full px-3 py-2 text-xs"
+                    />
+                  )}
                 </div>
 
                 <div className="flex flex-wrap gap-2 pt-2">

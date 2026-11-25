@@ -291,7 +291,12 @@ export interface ChestState {
 }
 
 export interface TeacherSettings {
-  pin: string;
+  pin?: string;
+  pinHash?: string;
+  pinUpdatedAt?: string;
+  pinSetupCompletedAt?: string;
+  setupSecretConsumedAt?: string;
+  consumedSetupSecretDigests?: string[];
   googleSheetsWebAppUrl: string;
   spreadsheetIdOrUrl?: string;
   sheetsSharedSecret?: string;

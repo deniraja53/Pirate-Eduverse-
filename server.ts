@@ -21,14 +21,18 @@ import {
   CHEST_PRESETS,
   deduplicateQuestions,
   getActivePublishedPackage,
+  getTeacherAuthStatus,
   issueTeacherToken,
   loadDatabase,
   recalculateSessionTotals,
   recordDashboardActivity,
   recordSyncLog,
   saveDatabase,
+  setupInitialTeacherPinWithSecret,
+  updateTeacherPinSecurely,
   upsertAnswerInSession,
   validateTeacherToken,
+  verifyTeacherLoginPin,
 } from './server/db.ts';
 import {
   MAX_PDF_BYTES,
@@ -67,9 +71,44 @@ import {
   type StudentSession,
 } from './src/types/game.ts';
 
-const PORT = 3000;
+const PORT =
+  process.env.NODE_ENV === 'production' ? Number(process.env.PORT) || 3000 : 3000;
 const app = express();
 const server = http.createServer(app);
+
+// In-memory rate limiting for teacher authentication & initial PIN setup
+const AUTH_WINDOW_MS = 5 * 60 * 1000;
+const AUTH_MAX_FAILURES = 8;
+const authFailureStore = new Map<string, { failures: number; resetAt: number }>();
+
+function getClientIpKey(req: Request): string {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0]?.trim();
+  return forwarded || req.ip || req.socket.remoteAddress || 'unknown';
+}
+
+function isAuthRateLimited(key: string): boolean {
+  const entry = authFailureStore.get(key);
+  if (!entry) return false;
+  if (Date.now() >= entry.resetAt) {
+    authFailureStore.delete(key);
+    return false;
+  }
+  return entry.failures >= AUTH_MAX_FAILURES;
+}
+
+function recordAuthFailure(key: string): void {
+  const now = Date.now();
+  const entry = authFailureStore.get(key);
+  if (!entry || now >= entry.resetAt) {
+    authFailureStore.set(key, { failures: 1, resetAt: now + AUTH_WINDOW_MS });
+  } else {
+    entry.failures += 1;
+  }
+}
+
+function clearAuthFailure(key: string): void {
+  authFailureStore.delete(key);
+}
 
 // WebSocket server on /ws for real-time updates across Gameplay <-> Server <-> Portal Guru
 const wss = new WebSocketServer({ server, path: '/ws' });
@@ -201,16 +240,18 @@ app.get('/api/question-images/:filename', (req, res) => {
 app.get('/api/quiz/active', (_req, res) => {
   const active = getActivePublishedPackage();
   if (!active) {
-    res.status(404).json({
-      success: false,
+    res.status(200).json({
+      success: true,
+      hasActiveQuiz: false,
       activePackage: null,
       message:
         'Belum ada paket soal aktif yang diterbitkan oleh guru. Silakan hubungi guru untuk menerbitkan paket soal di Portal Guru.',
     });
     return;
   }
-  res.json({
+  res.status(200).json({
     success: true,
+    hasActiveQuiz: true,
     activePackage: active,
   });
 });
@@ -461,12 +502,79 @@ app.post('/api/sessions/:sessionId/sync-sheets', async (req, res) => {
 // TEACHER PORTAL ROUTES
 // ========================
 
-app.post('/api/teacher/login', (req, res) => {
-  const { pin } = req.body as { pin?: string };
-  const db = loadDatabase();
-  const validPin = db.settings.pin || 'guru123';
+app.get('/api/teacher/auth-status', (_req, res) => {
+  const status = getTeacherAuthStatus();
+  res.json({
+    success: true,
+    ...status,
+  });
+});
 
-  if (!pin || pin !== validPin) {
+app.post('/api/teacher/setup-pin', (req, res) => {
+  const clientKey = `setup:${getClientIpKey(req)}`;
+  if (isAuthRateLimited(clientKey)) {
+    res.status(429).json({
+      success: false,
+      message: 'Terlalu banyak percobaan setup PIN. Silakan tunggu 5 menit sebelum mencoba lagi.',
+    });
+    return;
+  }
+
+  const { setupSecret, newPin } = (req.body || {}) as {
+    setupSecret?: string;
+    newPin?: string;
+  };
+
+  const result = setupInitialTeacherPinWithSecret(
+    typeof setupSecret === 'string' ? setupSecret : '',
+    typeof newPin === 'string' ? newPin : ''
+  );
+
+  if (!result.success) {
+    if (result.status === 401 || result.status === 403) {
+      recordAuthFailure(clientKey);
+    }
+    res.status(result.status).json({
+      success: false,
+      message: result.message,
+      authStatus: getTeacherAuthStatus(),
+    });
+    return;
+  }
+
+  clearAuthFailure(clientKey);
+  res.json({
+    success: true,
+    message: result.message,
+    authStatus: getTeacherAuthStatus(),
+  });
+});
+
+app.post('/api/teacher/login', (req, res) => {
+  const clientKey = `login:${getClientIpKey(req)}`;
+  if (isAuthRateLimited(clientKey)) {
+    res.status(429).json({
+      success: false,
+      message: 'Terlalu banyak percobaan PIN salah. Silakan tunggu 5 menit sebelum mencoba lagi.',
+    });
+    return;
+  }
+
+  const status = getTeacherAuthStatus();
+  if (!status.pinConfigured) {
+    res.status(403).json({
+      success: false,
+      requiresInitialSetup: true,
+      setupSecretConfigured: status.setupSecretConfigured,
+      message:
+        'PIN Portal Guru belum dikonfigurasi. Lakukan setup awal aman menggunakan secret server (TEACHER_SETUP_SECRET) terlebih dahulu.',
+    });
+    return;
+  }
+
+  const { pin } = (req.body || {}) as { pin?: string };
+  if (typeof pin !== 'string' || !verifyTeacherLoginPin(pin)) {
+    recordAuthFailure(clientKey);
     res.status(401).json({
       success: false,
       message: 'PIN salah! Silakan masukkan PIN guru yang valid.',
@@ -474,6 +582,7 @@ app.post('/api/teacher/login', (req, res) => {
     return;
   }
 
+  clearAuthFailure(clientKey);
   const token = issueTeacherToken();
   res.json({
     success: true,
@@ -1161,6 +1270,7 @@ app.post('/api/teacher/sessions/:sessionId/retry-sync', requireTeacherAuth, asyn
 
 function buildSafeSettingsResponse() {
   const db = loadDatabase();
+  const authStatus = getTeacherAuthStatus();
   const spreadsheetId = extractSpreadsheetId(db.settings.spreadsheetIdOrUrl);
   return {
     googleSheetsWebAppUrl: db.settings.googleSheetsWebAppUrl,
@@ -1171,7 +1281,8 @@ function buildSafeSettingsResponse() {
       : '',
     autoSyncSheets: db.settings.autoSyncSheets,
     activePackageId: db.settings.activePackageId,
-    pinConfigured: Boolean(db.settings.pin),
+    pinConfigured: authStatus.pinConfigured,
+    pinManagedByEnv: authStatus.pinManagedByEnv,
     sheetsSharedSecretConfigured: Boolean(db.settings.sheetsSharedSecret),
     sheetsLastSyncAt: db.settings.sheetsLastSyncAt || '',
     sheetsLastError: db.settings.sheetsLastError || '',
@@ -1237,8 +1348,15 @@ app.put('/api/teacher/settings', requireTeacherAuth, (req, res) => {
     if (activePkg) broadcastWs('quiz:published', activePkg);
   }
 
-  if (typeof newPin === 'string' && newPin.trim().length >= 4) {
-    db.settings.pin = newPin.trim();
+  if (typeof newPin === 'string' && newPin.trim().length > 0) {
+    const pinUpdate = updateTeacherPinSecurely(newPin);
+    if (!pinUpdate.success) {
+      res.status(400).json({
+        success: false,
+        message: pinUpdate.message,
+      });
+      return;
+    }
   }
 
   saveDatabase();
@@ -1380,12 +1498,12 @@ async function startServer() {
     const distDir = path.resolve(process.cwd(), 'dist');
     const distIndexPath = path.join(distDir, 'index.html');
     app.use(express.static(distDir, { index: false }));
-    app.get('/{*splat}', (req, res) => {
+    app.get('*', (_req, res) => {
       const rawHtml = fs.readFileSync(distIndexPath, 'utf-8');
       res
         .status(200)
         .type('text/html; charset=utf-8')
-        .send(injectPublicOriginIntoHtml(rawHtml, req));
+        .send(injectPublicOriginIntoHtml(rawHtml, _req));
     });
   }
 

@@ -15,7 +15,7 @@ import {
   type Question,
   type QuestionPackage,
   type QuestionType,
-} from '../types/game';
+} from '../types/game.ts';
 
 export interface QuestionValidationResult {
   valid: boolean;

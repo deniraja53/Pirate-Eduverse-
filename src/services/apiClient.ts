@@ -19,26 +19,15 @@ import type {
 } from '../types/game';
 import type { PackageValidationResult } from '../teacher/questionValidation';
 
-const TEACHER_TOKEN_STORAGE_KEY = 'pirate_academy_teacher_token_v4';
+// Store Teacher Portal token strictly in JS memory rather than web storage
+let teacherAuthTokenMemory = '';
 
 export function getTeacherToken(): string {
-  try {
-    return sessionStorage.getItem(TEACHER_TOKEN_STORAGE_KEY) || '';
-  } catch {
-    return '';
-  }
+  return teacherAuthTokenMemory;
 }
 
 export function setTeacherToken(token: string): void {
-  try {
-    if (token) {
-      sessionStorage.setItem(TEACHER_TOKEN_STORAGE_KEY, token);
-    } else {
-      sessionStorage.removeItem(TEACHER_TOKEN_STORAGE_KEY);
-    }
-  } catch {
-    // ignore storage restriction
-  }
+  teacherAuthTokenMemory = token ? token.trim() : '';
 }
 
 type ResponseBodyKind = 'json' | 'empty' | 'html' | 'text' | 'invalid_json' | 'invalid_schema';
@@ -279,16 +268,42 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
 
 export async function fetchActiveQuiz(): Promise<{
   success: boolean;
+  hasActiveQuiz: boolean;
+  serverConfirmed: boolean;
   activePackage: QuestionPackage | null;
+  status?: number;
   message?: string;
 }> {
-  const res = await fetch('/api/quiz/active');
-  const data = await parseJsonSafe<{ activePackage: QuestionPackage | null }>(res);
-  return {
-    success: Boolean(res.ok && data.success && data.activePackage),
-    activePackage: data.activePackage || null,
-    message: data.message,
-  };
+  try {
+    const res = await fetch('/api/quiz/active', {
+      headers: { Accept: 'application/json' },
+    });
+    const data = await parseJsonSafe<{
+      hasActiveQuiz?: boolean;
+      activePackage?: QuestionPackage | null;
+    }>(res, 'Memuat Kuis Aktif');
+
+    const serverConfirmed = Boolean(res.ok && data.success);
+    const hasActiveQuiz = Boolean(serverConfirmed && data.activePackage);
+
+    return {
+      success: hasActiveQuiz,
+      hasActiveQuiz,
+      serverConfirmed,
+      activePackage: data.activePackage || null,
+      status: res.status,
+      message: data.message,
+    };
+  } catch {
+    return {
+      success: false,
+      hasActiveQuiz: false,
+      serverConfirmed: false,
+      activePackage: null,
+      status: 0,
+      message: 'Tidak dapat terhubung ke server backend untuk memeriksa kuis aktif.',
+    };
+  }
 }
 
 export async function startStudentSessionApi(
@@ -405,23 +420,101 @@ export async function syncStudentSheetsApi(sessionId: string): Promise<{
 // TEACHER PORTAL APIs
 // ========================
 
+export interface TeacherAuthStatusDto {
+  pinConfigured: boolean;
+  requiresInitialSetup: boolean;
+  setupSecretConfigured: boolean;
+  setupSecretConsumed: boolean;
+  pinManagedByEnv: boolean;
+}
+
+export async function fetchTeacherAuthStatusApi(): Promise<{
+  success: boolean;
+  status?: number;
+  authStatus?: TeacherAuthStatusDto;
+  message?: string;
+}> {
+  try {
+    const res = await fetch('/api/teacher/auth-status', {
+      headers: { Accept: 'application/json' },
+    });
+    const data = await parseJsonSafe<TeacherAuthStatusDto>(res, 'Status Autentikasi Guru');
+    if (!res.ok || !data.success) {
+      return {
+        success: false,
+        status: res.status,
+        message: data.message || `Gagal memeriksa status Portal Guru (HTTP ${res.status}).`,
+      };
+    }
+    return {
+      success: true,
+      status: res.status,
+      authStatus: {
+        pinConfigured: Boolean(data.pinConfigured),
+        requiresInitialSetup: Boolean(data.requiresInitialSetup),
+        setupSecretConfigured: Boolean(data.setupSecretConfigured),
+        setupSecretConsumed: Boolean(data.setupSecretConsumed),
+        pinManagedByEnv: Boolean(data.pinManagedByEnv),
+      },
+    };
+  } catch {
+    return {
+      success: false,
+      status: 0,
+      message: 'Tidak dapat terhubung ke server API Portal Guru.',
+    };
+  }
+}
+
+export async function setupInitialTeacherPinApi(
+  setupSecret: string,
+  newPin: string
+): Promise<{
+  success: boolean;
+  message: string;
+  authStatus?: TeacherAuthStatusDto;
+}> {
+  const res = await fetch('/api/teacher/setup-pin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ setupSecret, newPin }),
+  });
+  const data = await parseJsonSafe<{ authStatus?: TeacherAuthStatusDto }>(
+    res,
+    'Setup Awal PIN Guru'
+  );
+  return {
+    success: Boolean(res.ok && data.success),
+    message: data.message || 'Gagal menetapkan PIN awal Portal Guru.',
+    authStatus: data.authStatus,
+  };
+}
+
 export async function loginTeacherApi(pin: string): Promise<{
   success: boolean;
   token?: string;
+  requiresInitialSetup?: boolean;
+  setupSecretConfigured?: boolean;
   message: string;
 }> {
   const res = await fetch('/api/teacher/login', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify({ pin }),
   });
-  const data = await parseJsonSafe<{ token?: string }>(res);
+  const data = await parseJsonSafe<{
+    token?: string;
+    requiresInitialSetup?: boolean;
+    setupSecretConfigured?: boolean;
+  }>(res, 'Login Portal Guru');
   if (res.ok && data.success && data.token) {
     setTeacherToken(data.token);
   }
   return {
     success: Boolean(res.ok && data.success),
     token: data.token,
+    requiresInitialSetup: data.requiresInitialSetup,
+    setupSecretConfigured: data.setupSecretConfigured,
     message: data.message || 'Autentikasi gagal.',
   };
 }
@@ -811,6 +904,7 @@ export interface TeacherSettingsDto {
   autoSyncSheets: boolean;
   activePackageId: string;
   pinConfigured: boolean;
+  pinManagedByEnv?: boolean;
   sheetsSharedSecretConfigured: boolean;
   sheetsLastSyncAt: string;
   sheetsLastError: string;

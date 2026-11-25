@@ -11,7 +11,7 @@
  * Created by Deni Raja99
  */
 
-import type { ChestZoneType } from '../types/game';
+import type { ChestZoneType } from '../types/game.ts';
 
 export interface ChestWaypoint {
   id: string;
