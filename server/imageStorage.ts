@@ -6,11 +6,15 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
 export const MAX_IMAGE_BYTES = 2 * 1024 * 1024; // 2 MB
-export const QUESTION_IMAGES_DIR = path.resolve(process.cwd(), 'data', 'uploads', 'questions');
+const SEED_QUESTION_IMAGES_DIR = path.resolve(process.cwd(), 'data', 'uploads', 'questions');
+export const QUESTION_IMAGES_DIR = process.env.VERCEL
+  ? path.join(os.tmpdir(), 'pirate-academy-data', 'uploads', 'questions')
+  : SEED_QUESTION_IMAGES_DIR;
 
 export interface ValidatedImageInfo {
   ext: 'png' | 'jpg' | 'webp';
@@ -109,14 +113,14 @@ export function resolveSafeQuestionImagePath(fileName: string): string | null {
   if (!fileName || !/^[a-zA-Z0-9._-]+$/.test(fileName)) {
     return null;
   }
-  const resolved = path.resolve(QUESTION_IMAGES_DIR, fileName);
-  if (!resolved.startsWith(QUESTION_IMAGES_DIR + path.sep)) {
-    return null;
+  const candidates = [QUESTION_IMAGES_DIR, SEED_QUESTION_IMAGES_DIR];
+  for (const dir of candidates) {
+    const resolved = path.resolve(dir, fileName);
+    if (resolved.startsWith(dir + path.sep) && fs.existsSync(resolved)) {
+      return resolved;
+    }
   }
-  if (!fs.existsSync(resolved)) {
-    return null;
-  }
-  return resolved;
+  return null;
 }
 
 export function deleteQuestionImageByUrl(imageUrl: string | undefined): boolean {

@@ -6,6 +6,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type {
@@ -42,7 +43,12 @@ export interface DatabaseState {
   lastUpdatedAt: string;
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
+const IS_VERCEL_RUNTIME = Boolean(process.env.VERCEL);
+const SEED_DATA_DIR = path.resolve(process.cwd(), 'data');
+const SEED_DB_FILE = path.join(SEED_DATA_DIR, 'db.json');
+const DATA_DIR = IS_VERCEL_RUNTIME
+  ? path.join(os.tmpdir(), 'pirate-academy-data')
+  : SEED_DATA_DIR;
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 const DEFAULT_QUESTION_EXPLANATIONS: Record<
@@ -553,18 +559,69 @@ export function updateTeacherPinSecurely(newPinInput: string): {
   };
 }
 
+const EPHEMERAL_TOKEN_FALLBACK_KEY = crypto.randomBytes(32).toString('hex');
+
+function getTeacherTokenSigningKey(): string {
+  const envSecret = (
+    process.env.TEACHER_AUTH_SECRET ||
+    process.env.TEACHER_PIN ||
+    process.env.TEACHER_PIN_HASH ||
+    process.env.TEACHER_SETUP_SECRET ||
+    ''
+  ).trim();
+  if (envSecret) {
+    return `pa3d-hmac:${sha256Hex(envSecret)}`;
+  }
+  const db = loadDatabase();
+  if (db.settings.pinHash) {
+    return `pa3d-hmac:${sha256Hex(db.settings.pinHash)}`;
+  }
+  return EPHEMERAL_TOKEN_FALLBACK_KEY;
+}
+
 export function issueTeacherToken(): string {
-  const token = crypto.randomBytes(24).toString('hex');
-  teacherTokens.set(token, Date.now() + 1000 * 60 * 60 * 12); // 12 hours
+  const expiresAt = Date.now() + 1000 * 60 * 60 * 12; // 12 hours
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const payload = `v1.${expiresAt}.${nonce}`;
+  const sig = crypto
+    .createHmac('sha256', getTeacherTokenSigningKey())
+    .update(payload)
+    .digest('hex');
+  const token = `${payload}.${sig}`;
+  teacherTokens.set(token, expiresAt);
   return token;
 }
 
 export function validateTeacherToken(token: string | undefined): boolean {
   if (!token) return false;
-  const expiry = teacherTokens.get(token);
+  const trimmed = token.trim();
+  const parts = trimmed.split('.');
+  if (parts.length === 4 && parts[0] === 'v1') {
+    const expiresAt = Number(parts[1]);
+    const nonce = parts[2];
+    const sigHex = parts[3];
+    if (!Number.isFinite(expiresAt) || Date.now() > expiresAt || !nonce || !sigHex) {
+      return false;
+    }
+    try {
+      const payload = `v1.${parts[1]}.${nonce}`;
+      const expectedHex = crypto
+        .createHmac('sha256', getTeacherTokenSigningKey())
+        .update(payload)
+        .digest('hex');
+      const expectedBuf = Buffer.from(expectedHex, 'hex');
+      const actualBuf = Buffer.from(sigHex, 'hex');
+      if (expectedBuf.length !== actualBuf.length) return false;
+      return crypto.timingSafeEqual(expectedBuf, actualBuf);
+    } catch {
+      return false;
+    }
+  }
+
+  const expiry = teacherTokens.get(trimmed);
   if (!expiry) return false;
   if (Date.now() > expiry) {
-    teacherTokens.delete(token);
+    teacherTokens.delete(trimmed);
     return false;
   }
   return true;
@@ -577,11 +634,17 @@ export function loadDatabase(): DatabaseState {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    if (fs.existsSync(DB_FILE)) {
-      const raw = fs.readFileSync(DB_FILE, 'utf-8');
+    const sourceFile = fs.existsSync(DB_FILE)
+      ? DB_FILE
+      : fs.existsSync(SEED_DB_FILE)
+      ? SEED_DB_FILE
+      : null;
+
+    if (sourceFile) {
+      const raw = fs.readFileSync(sourceFile, 'utf-8');
       const parsed = JSON.parse(raw) as Partial<DatabaseState>;
       if (parsed && Array.isArray(parsed.packages) && Array.isArray(parsed.sessions) && parsed.settings) {
-        let repaired = false;
+        let repaired = sourceFile !== DB_FILE;
         if (!Array.isArray(parsed.syncLogs)) {
           parsed.syncLogs = [];
           repaired = true;

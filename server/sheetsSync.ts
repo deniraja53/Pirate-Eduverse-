@@ -69,7 +69,16 @@ function resolvePublicImageUrl(imageUrl?: string): string {
   // Never dump base64 blobs into Google Sheets cells
   if (trimmed.startsWith('data:')) return '';
   if (trimmed.startsWith('/api/question-images/')) {
-    const appUrl = (process.env.APP_URL || '').trim().replace(/\/$/, '');
+    const appUrl = (
+      process.env.APP_URL ||
+      process.env.PUBLIC_APP_URL ||
+      (process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+        : '') ||
+      (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')
+    )
+      .trim()
+      .replace(/\/$/, '');
     return appUrl ? `${appUrl}${trimmed}` : trimmed;
   }
   return trimmed;
