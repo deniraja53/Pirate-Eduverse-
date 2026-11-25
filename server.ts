@@ -1306,7 +1306,11 @@ function resolvePublicOrigin(req: Request): string {
   }
 
   const forwardedHostRaw = req.headers['x-forwarded-host'] || req.headers.host || '';
-  const host = String(forwardedHostRaw).split(',')[0]?.trim().toLowerCase() || '';
+  const host = String(forwardedHostRaw)
+    .split(',')[0]
+    ?.trim()
+    .toLowerCase()
+    .replace(/:443$/, '') || '';
   const isValidPublicHost =
     /^[a-z0-9.-]+(:\d+)?$/.test(host) &&
     !host.startsWith('localhost') &&
@@ -1335,6 +1339,24 @@ function injectPublicOriginIntoHtml(html: string, req: Request): string {
 }
 
 async function startServer() {
+  const publicOgCoverPath = path.resolve(process.cwd(), 'public', 'og-cover.jpg');
+  const distOgCoverPath = path.resolve(process.cwd(), 'dist', 'og-cover.jpg');
+
+  app.get('/og-cover.jpg', (_req, res, next) => {
+    const filePath = fs.existsSync(distOgCoverPath)
+      ? distOgCoverPath
+      : fs.existsSync(publicOgCoverPath)
+      ? publicOgCoverPath
+      : null;
+    if (!filePath) {
+      next();
+      return;
+    }
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(filePath);
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
