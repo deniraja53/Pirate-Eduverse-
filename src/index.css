@@ -38,30 +38,22 @@
   background: rgba(180, 83, 9, 0.85);
 }
 
-@keyframes floatAnim {
-  0%, 100% { transform: translateY(0px); }
-  50% { transform: translateY(-8px); }
-}
-
-.animate-float {
-  animation: floatAnim 3s ease-in-out infinite;
-}
-
-/* HTML: <div class="loader"></div> */
+/* Clean Nautical CSS Loader without unsupported APL symbols */
 .loader {
   width: fit-content;
-  font-weight: bold;
-  font-family: monospace;
-  font-size: 30px;
-  line-height: 1.2em;
-  height: 1.2em;
+  font-weight: 800;
+  font-family: 'Cinzel', serif;
+  letter-spacing: 0.08em;
+  font-size: 24px;
+  line-height: 1.25em;
+  height: 1.25em;
   overflow: hidden;
 }
 .loader:before {
-  content: "Loading...\A⌰oading...\A⌰⍜ading...\A⌰⍜⏃ding...\A⌰⍜⏃⎅ing...\A⌰⍜⏃⎅⟟ng...\A⌰⍜⏃⎅⟟⋏g...\A⌰⍜⏃⎅⟟⋏☌...\A⌰⍜⏃⎅⟟⋏☌.\A⌰⍜⏃⎅⟟⋏☌..\A⌰⍜⏃⎅⟟⋏☌...";
+  content: "MEMUAT\AMEMUAT.\AMEMUAT..\AMEMUAT...";
   white-space: pre;
   display: inline-block;
-  animation: l39 1s infinite steps(11) alternate;
+  animation: l39 1.2s infinite steps(4);
 }
 @keyframes l39 {
   100% {
@@ -69,3 +61,201 @@
   }
 }
 
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #f59e0b;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-spin,
+  .animate-bounce,
+  .animate-pulse,
+  .loader:before {
+    animation: none !important;
+  }
+}
+
+/* ============================================================================
+ * PIXEL ART RETRO TEACHER PORTAL THEME (Scoped strictly to .pixel-portal)
+ * Palette: Ungu Gelap (#1b102d), Ungu Panel (#2b1747), Ungu Cerah (#7c3aed),
+ *          Kuning Emas (#facc15), Pink Retro (#ec4899), Teks Terang (#f8f4ff)
+ * ============================================================================ */
+.pixel-portal {
+  --px-bg: #170d29;
+  --px-bg-grid: #21123a;
+  --px-panel: #281647;
+  --px-panel-deep: #140924;
+  --px-purple: #7c3aed;
+  --px-purple-bright: #9333ea;
+  --px-gold: #facc15;
+  --px-gold-dark: #ca8a04;
+  --px-pink: #ec4899;
+  --px-pink-dark: #be185d;
+  --px-text: #f8f4ff;
+  --px-muted: #cbb7eb;
+  --px-border: #6d28d9;
+  --px-border-strong: #facc15;
+  --px-green: #22c55e;
+  --px-red: #ef4444;
+  --px-shadow: #0a0414;
+
+  background-color: var(--px-bg);
+  background-image:
+    linear-gradient(rgba(168, 85, 247, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(168, 85, 247, 0.06) 1px, transparent 1px);
+  background-size: 20px 20px;
+  color: var(--px-text);
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.pixel-portal h1,
+.pixel-portal h2,
+.pixel-portal h3,
+.pixel-portal .px-font-display {
+  font-family: 'Silkscreen', 'Press Start 2P', monospace;
+  letter-spacing: 0.03em;
+}
+
+.pixel-portal .px-card {
+  background-color: var(--px-panel);
+  border: 3px solid var(--px-border);
+  box-shadow: 4px 4px 0px var(--px-shadow);
+  border-radius: 2px;
+}
+
+.pixel-portal .px-card-pink {
+  background-color: var(--px-panel);
+  border: 3px solid var(--px-pink);
+  box-shadow: 4px 4px 0px var(--px-shadow);
+  border-radius: 2px;
+}
+
+.pixel-portal .px-card-gold {
+  background-color: var(--px-panel);
+  border: 3px solid var(--px-gold);
+  box-shadow: 4px 4px 0px var(--px-shadow);
+  border-radius: 2px;
+}
+
+.pixel-portal .px-subcard {
+  background-color: var(--px-panel-deep);
+  border: 2px solid #4c1d95;
+  box-shadow: 3px 3px 0px var(--px-shadow);
+  border-radius: 2px;
+}
+
+.pixel-portal .px-btn {
+  border: 2px solid #0a0414;
+  box-shadow: 3px 3px 0px var(--px-shadow);
+  border-radius: 2px;
+  transition: transform 0.08s ease, box-shadow 0.08s ease, background-color 0.12s ease;
+  font-weight: 800;
+}
+
+.pixel-portal .px-btn:hover:not(:disabled) {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0px var(--px-shadow);
+}
+
+.pixel-portal .px-btn:active:not(:disabled) {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0px var(--px-shadow);
+}
+
+.pixel-portal .px-btn:focus-visible {
+  outline: 2px solid var(--px-gold);
+  outline-offset: 2px;
+}
+
+.pixel-portal .px-btn:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.pixel-portal .px-btn-gold {
+  background-color: var(--px-gold);
+  color: #1f0e38;
+  border-color: #fde047;
+}
+.pixel-portal .px-btn-gold:hover:not(:disabled) {
+  background-color: #fde047;
+}
+
+.pixel-portal .px-btn-pink {
+  background-color: var(--px-pink);
+  color: #fff5fb;
+  border-color: #f472b6;
+}
+.pixel-portal .px-btn-pink:hover:not(:disabled) {
+  background-color: #f472b6;
+  color: #240717;
+}
+
+.pixel-portal .px-btn-purple {
+  background-color: var(--px-purple);
+  color: #ffffff;
+  border-color: #a855f7;
+}
+.pixel-portal .px-btn-purple:hover:not(:disabled) {
+  background-color: #8b5cf6;
+}
+
+.pixel-portal .px-btn-dark {
+  background-color: #1d0e36;
+  color: #f3e8ff;
+  border-color: #6d28d9;
+}
+.pixel-portal .px-btn-dark:hover:not(:disabled) {
+  background-color: #311959;
+}
+
+.pixel-portal .px-btn-green {
+  background-color: #16a34a;
+  color: #ffffff;
+  border-color: #4ade80;
+}
+.pixel-portal .px-btn-green:hover:not(:disabled) {
+  background-color: #22c55e;
+  color: #052e16;
+}
+
+.pixel-portal .px-btn-red {
+  background-color: #dc2626;
+  color: #ffffff;
+  border-color: #f87171;
+}
+.pixel-portal .px-btn-red:hover:not(:disabled) {
+  background-color: #ef4444;
+}
+
+.pixel-portal .px-input {
+  background-color: #120721;
+  border: 2px solid #6d28d9;
+  color: #f8f4ff;
+  border-radius: 2px;
+  box-shadow: inset 2px 2px 0px #090312;
+}
+
+.pixel-portal .px-input:focus {
+  outline: none;
+  border-color: var(--px-gold);
+  box-shadow: inset 2px 2px 0px #090312, 0 0 0 2px rgba(250, 204, 21, 0.25);
+}
+
+.pixel-portal .px-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  border: 2px solid;
+  border-radius: 2px;
+  line-height: 1.3;
+}

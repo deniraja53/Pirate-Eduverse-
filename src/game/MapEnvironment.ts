@@ -11,6 +11,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { GameConfig } from './GameConfig';
 import type { ChestPlacementMeta, ChestZoneType } from '../types/game';
 
+THREE.Cache.enabled = true;
+
 export type SurfaceCategory =
   | 'road'
   | 'bridge'
@@ -160,8 +162,41 @@ const _rayOrigin = new THREE.Vector3();
 const _downVec = new THREE.Vector3(0, -1, 0);
 const _normalMat = new THREE.Matrix3();
 const _worldNorm = new THREE.Vector3();
+const _chestRaycaster = new THREE.Raycaster();
+const _chestRayOrigin = new THREE.Vector3();
+const _dbgHitVec = new THREE.Vector3();
 
 const SPATIAL_CELL_SIZE = 2.0;
+
+interface CachedSpatialIndex {
+  solidTriangles: SolidTriangle[];
+  spatialGrid: Map<number, SolidTriangle[]>;
+  obstacleColliders: ObstacleCollider[];
+  unclassifiedMeshes: string[];
+}
+
+const cachedMapTemplatePromises = new Map<string, Promise<THREE.Object3D>>();
+const cachedSpatialIndexMap = new Map<string, CachedSpatialIndex>();
+
+function loadCachedMapScene(mapGlbPath: string): Promise<THREE.Object3D> {
+  const existing = cachedMapTemplatePromises.get(mapGlbPath);
+  if (existing) return existing;
+
+  const promise = new Promise<THREE.Object3D>((resolve, reject) => {
+    const loader = new GLTFLoader();
+    loader.load(
+      mapGlbPath,
+      (gltf) => resolve(gltf.scene),
+      undefined,
+      (err) => {
+        cachedMapTemplatePromises.delete(mapGlbPath);
+        reject(err);
+      }
+    );
+  });
+  cachedMapTemplatePromises.set(mapGlbPath, promise);
+  return promise;
+}
 
 function cellKey(gx: number, gz: number): number {
   // Deterministic 2D integer pair hash within [-2048..2047]
@@ -272,35 +307,31 @@ export class MapEnvironment {
   }
 
   /**
-   * Load map GLB asynchronously via URL (browser runtime)
+   * Load map GLB asynchronously via URL (browser runtime) with shared template & spatial cache
    */
   public loadMap(onSuccess?: () => void, onError?: (err: Error) => void): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const loader = new GLTFLoader();
-      loader.load(
-        this.config.mapGlbPath,
-        (gltf) => {
-          this.initFromScene(gltf.scene);
-          if (onSuccess) onSuccess();
-          resolve();
-        },
-        undefined,
-        (err) => {
-          console.error('Error loading map GLB:', err);
-          this.diagnostics.status = 'error';
-          this.diagnostics.message = `Gagal memuat peta (${this.config.mapGlbPath}): ${(err as Error).message}`;
-          if (onError) onError(err as Error);
-          reject(err);
-        }
-      );
-    });
+    const mapPath = this.config.mapGlbPath;
+    return loadCachedMapScene(mapPath)
+      .then((templateScene) => {
+        const clonedScene = templateScene.clone(true);
+        const spatialKey = `${mapPath}::${this.config.mapScale}`;
+        this.initFromScene(clonedScene, spatialKey);
+        if (onSuccess) onSuccess();
+      })
+      .catch((err) => {
+        console.error('Error loading map GLB:', err);
+        this.diagnostics.status = 'error';
+        this.diagnostics.message = `Gagal memuat peta (${this.config.mapGlbPath}): ${(err as Error).message}`;
+        if (onError) onError(err as Error);
+        throw err;
+      });
   }
 
   /**
    * Initialize meshes, bridge colliders, spatial-hashed obstacle geometry, and debug wireframes
    * from an already-loaded THREE.Object3D map root (usable in both browser & headless tests).
    */
-  public initFromScene(mapSceneRoot: THREE.Object3D): void {
+  public initFromScene(mapSceneRoot: THREE.Object3D, spatialCacheKey?: string): void {
     if (this.mapModel && this.mapModel.parent === this.group) {
       this.group.remove(this.mapModel);
     }
@@ -387,8 +418,31 @@ export class MapEnvironment {
     // 4. Construct tightened bridge static colliders
     this.buildBridgeColliders();
 
-    // 5. Build Spatial Hash Grid & Primitive Obstacle Colliders from peijing environment meshes
-    this.buildObstacleSpatialIndex(unclassified);
+    // 5. Build or reuse Spatial Hash Grid & Primitive Obstacle Colliders from peijing environment meshes
+    const cachedSpatial = spatialCacheKey ? cachedSpatialIndexMap.get(spatialCacheKey) : undefined;
+    if (cachedSpatial) {
+      this.solidTriangles = cachedSpatial.solidTriangles;
+      this.spatialGrid = cachedSpatial.spatialGrid;
+      this.obstacleColliders = cachedSpatial.obstacleColliders;
+      this.triQueryStamp = new Int32Array(this.solidTriangles.length);
+      this.currentQueryStamp = 1;
+      this.collisionStats = {
+        solidObstacleTriangles: this.solidTriangles.length,
+        indexedGridCells: this.spatialGrid.size,
+        obstaclePrimitivesCount: this.obstacleColliders.length,
+        unclassifiedMeshes: cachedSpatial.unclassifiedMeshes,
+      };
+    } else {
+      this.buildObstacleSpatialIndex(unclassified);
+      if (spatialCacheKey && this.solidTriangles.length > 0) {
+        cachedSpatialIndexMap.set(spatialCacheKey, {
+          solidTriangles: this.solidTriangles,
+          spatialGrid: this.spatialGrid,
+          obstacleColliders: this.obstacleColliders,
+          unclassifiedMeshes: unclassified,
+        });
+      }
+    }
 
     // 6. Build Developer Debug Wireframe Geometry
     this.buildDebugWireframes();
@@ -1342,11 +1396,13 @@ export class MapEnvironment {
       // 2. Treasure chest solid cylinders (prevents clipping inside chest mesh while leaving [E] aura passable)
       for (let c = 0; c < chestColliders.length; c++) {
         const chest = chestColliders[c];
-        if (Math.abs(chest.y - footY) > 1.35) continue;
-
         const minSep = radius + chest.radius;
         const dx = curX - chest.x;
+        if (dx > minSep || dx < -minSep) continue;
         const dz = curZ - chest.z;
+        if (dz > minSep || dz < -minSep) continue;
+        if (Math.abs(chest.y - footY) > 1.35) continue;
+
         const distSq = dx * dx + dz * dz;
 
         if (distSq < minSep * minSep && distSq > 1e-8) {
@@ -1497,26 +1553,34 @@ export class MapEnvironment {
       const reportCategory = failCat;
       const finalGround = this.queryGroundSurface(candX, candZ, footY);
       const validY = finalGround.walkable ? finalGround.y : footY;
-      const reason = footCheck.failReason;
-      const blockerId = obs.collided ? (obs.colliderId || obs.label) : footCheck.failMeshName;
+      this.latestDebugData.surfaceCategory = reportCategory;
 
-      this.updateDebugData(
-        new THREE.Vector3(candX, validY + 2.8, candZ),
-        finalGround.hit ? new THREE.Vector3(candX, finalGround.y, candZ) : null,
-        finalGround.meshName,
-        validY,
-        finalGround.isOnBridge,
-        finalGround.hit ? 1 : 0,
-        reportCategory,
-        obs.collided,
-        true,
-        obs.label,
-        { x: startX, y: footY, z: startZ },
-        { x: desiredX, y: footY, z: desiredZ },
-        finalGround.walkable,
-        blockerId,
-        reason
-      );
+      if (this.debugVisualGroup.visible || this.config.debugMode) {
+        const reason = footCheck.failReason;
+        const blockerId = obs.collided ? (obs.colliderId || obs.label) : footCheck.failMeshName;
+        this.updateDebugDataInPlace(
+          candX,
+          validY + 2.8,
+          candZ,
+          finalGround.hit ? _dbgHitVec.set(candX, finalGround.y, candZ) : null,
+          finalGround.meshName,
+          validY,
+          finalGround.isOnBridge,
+          finalGround.hit ? 1 : 0,
+          reportCategory,
+          obs.collided,
+          true,
+          obs.label,
+          startX,
+          footY,
+          startZ,
+          desiredX,
+          desiredZ,
+          finalGround.walkable,
+          blockerId,
+          reason
+        );
+      }
 
       return {
         x: candX,
@@ -1533,27 +1597,36 @@ export class MapEnvironment {
 
     // Valid walkable result
     const finalSurface = footCheck.center;
-    const reason = obs.collided
-      ? `Sliding di samping ${obs.label || 'Obstacle'} (${obs.colliderId || 'mesh'})`
-      : 'OK (Walkable clear)';
+    this.latestDebugData.surfaceCategory = finalSurface.category;
 
-    this.updateDebugData(
-      new THREE.Vector3(candX, finalSurface.y + 2.8, candZ),
-      finalSurface.hit ? new THREE.Vector3(candX, finalSurface.y, candZ) : null,
-      finalSurface.meshName,
-      finalSurface.y,
-      finalSurface.isOnBridge,
-      finalSurface.hit ? 1 : 0,
-      finalSurface.category,
-      obs.collided,
-      hitBoundary,
-      obs.label,
-      { x: startX, y: footY, z: startZ },
-      { x: desiredX, y: footY, z: desiredZ },
-      finalSurface.walkable,
-      obs.colliderId,
-      reason
-    );
+    if (this.debugVisualGroup.visible || this.config.debugMode) {
+      const reason = obs.collided
+        ? `Sliding di samping ${obs.label || 'Obstacle'} (${obs.colliderId || 'mesh'})`
+        : 'OK (Walkable clear)';
+
+      this.updateDebugDataInPlace(
+        candX,
+        finalSurface.y + 2.8,
+        candZ,
+        finalSurface.hit ? _dbgHitVec.set(candX, finalSurface.y, candZ) : null,
+        finalSurface.meshName,
+        finalSurface.y,
+        finalSurface.isOnBridge,
+        finalSurface.hit ? 1 : 0,
+        finalSurface.category,
+        obs.collided,
+        hitBoundary,
+        obs.label,
+        startX,
+        footY,
+        startZ,
+        desiredX,
+        desiredZ,
+        finalSurface.walkable,
+        obs.colliderId,
+        reason
+      );
+    }
 
     return {
       x: candX,
@@ -1569,10 +1642,12 @@ export class MapEnvironment {
   }
 
   /**
-   * Updates real-time debug visualizers and telemetry payload (visuals active ONLY when debugMode === true).
+   * Updates real-time debug visualizers and telemetry in-place (Zero per-frame Vector3 allocations).
    */
-  private updateDebugData(
-    rayOrigin: THREE.Vector3,
+  private updateDebugDataInPlace(
+    rayX: number,
+    rayY: number,
+    rayZ: number,
     hitPoint: THREE.Vector3 | null,
     meshName: string,
     surfaceY: number,
@@ -1581,54 +1656,178 @@ export class MapEnvironment {
     surfaceCategory: SurfaceCategory,
     isCollidingObstacle: boolean,
     isAtBoundary: boolean,
-    collidingObstacleLabel?: string,
-    prevPos?: { x: number; y: number; z: number },
-    desiredPos?: { x: number; y: number; z: number },
-    isWalkableSurface: boolean = true,
-    blockingColliderId?: string,
-    blockingReason: string = 'OK'
+    collidingObstacleLabel: string | undefined,
+    prevX: number,
+    prevY: number,
+    prevZ: number,
+    desiredX: number,
+    desiredZ: number,
+    isWalkableSurface: boolean,
+    blockingColliderId: string | undefined,
+    blockingReason: string
   ) {
     const finishDist = Math.hypot(
-      rayOrigin.x - FINISH_SHIP_AREA.triggerCenter.x,
-      rayOrigin.z - FINISH_SHIP_AREA.triggerCenter.z
+      rayX - FINISH_SHIP_AREA.triggerCenter.x,
+      rayZ - FINISH_SHIP_AREA.triggerCenter.z
     );
-    this.latestDebugData = {
-      footPos: { x: rayOrigin.x, y: hitPoint ? hitPoint.y : surfaceY, z: rayOrigin.z },
-      prevPos: prevPos || { x: rayOrigin.x, y: surfaceY, z: rayOrigin.z },
-      desiredPos: desiredPos || { x: rayOrigin.x, y: surfaceY, z: rayOrigin.z },
-      rayOrigin: { x: rayOrigin.x, y: rayOrigin.y, z: rayOrigin.z },
-      hitPoint: hitPoint ? { x: hitPoint.x, y: hitPoint.y, z: hitPoint.z } : null,
-      detectedMeshName: meshName,
-      usedSurfaceHeight: Number(surfaceY.toFixed(3)),
-      isGrounded: true,
-      isOnBridge,
-      totalHits,
-      surfaceCategory,
-      isWalkableSurface,
-      isCollidingObstacle,
-      isAtBoundary,
-      collidingObstacleLabel,
-      blockingColliderId,
-      blockingReason,
-      playerColliderRadius: this.config.playerColliderRadius,
-      playerColliderHeight: this.config.playerColliderHeight,
-      finishDistance: Number(finishDist.toFixed(2)),
-      isInsideFinishZone: finishDist <= FINISH_SHIP_AREA.triggerRadius,
-      stats: this.collisionStats,
-    };
+    const d = this.latestDebugData;
+    d.footPos.x = rayX;
+    d.footPos.y = hitPoint ? hitPoint.y : surfaceY;
+    d.footPos.z = rayZ;
+    d.prevPos.x = prevX;
+    d.prevPos.y = prevY;
+    d.prevPos.z = prevZ;
+    d.desiredPos.x = desiredX;
+    d.desiredPos.y = prevY;
+    d.desiredPos.z = desiredZ;
+    d.rayOrigin.x = rayX;
+    d.rayOrigin.y = rayY;
+    d.rayOrigin.z = rayZ;
+    if (hitPoint) {
+      if (!d.hitPoint) {
+        d.hitPoint = { x: hitPoint.x, y: hitPoint.y, z: hitPoint.z };
+      } else {
+        d.hitPoint.x = hitPoint.x;
+        d.hitPoint.y = hitPoint.y;
+        d.hitPoint.z = hitPoint.z;
+      }
+    } else {
+      d.hitPoint = null;
+    }
+    d.detectedMeshName = meshName;
+    d.usedSurfaceHeight = Number(surfaceY.toFixed(3));
+    d.isGrounded = true;
+    d.isOnBridge = isOnBridge;
+    d.totalHits = totalHits;
+    d.surfaceCategory = surfaceCategory;
+    d.isWalkableSurface = isWalkableSurface;
+    d.isCollidingObstacle = isCollidingObstacle;
+    d.isAtBoundary = isAtBoundary;
+    d.collidingObstacleLabel = collidingObstacleLabel;
+    d.blockingColliderId = blockingColliderId;
+    d.blockingReason = blockingReason;
+    d.playerColliderRadius = this.config.playerColliderRadius;
+    d.playerColliderHeight = this.config.playerColliderHeight;
+    d.finishDistance = Number(finishDist.toFixed(2));
+    d.isInsideFinishZone = finishDist <= FINISH_SHIP_AREA.triggerRadius;
+    d.stats = this.collisionStats;
 
     if (this.debugVisualGroup.visible) {
-      this.debugFootMarker.position.set(rayOrigin.x, surfaceY, rayOrigin.z);
+      this.debugFootMarker.position.set(rayX, surfaceY, rayZ);
       if (hitPoint) {
         this.debugHitMarker.position.copy(hitPoint);
         const posAttr = this.debugRayLine.geometry.getAttribute('position') as THREE.BufferAttribute;
         if (posAttr) {
-          posAttr.setXYZ(0, rayOrigin.x, rayOrigin.y, rayOrigin.z);
+          posAttr.setXYZ(0, rayX, rayY, rayZ);
           posAttr.setXYZ(1, hitPoint.x, hitPoint.y, hitPoint.z);
           posAttr.needsUpdate = true;
         }
       }
     }
+  }
+
+  /**
+   * Evaluates obstacle clearance & nearest prop distance in O(1) using the pre-built 2m spatial grid
+   * instead of firing 30+ full-mesh raycasts against environmentMeshes per candidate.
+   */
+  private querySpatialChestClearance(
+    cx: number,
+    groundY: number,
+    cz: number
+  ): { obstacleClearanceOk: boolean; nearestPropDistance: number | null } {
+    if (this.solidTriangles.length === 0) {
+      return { obstacleClearanceOk: true, nearestPropDistance: null };
+    }
+
+    this.currentQueryStamp++;
+    if (this.currentQueryStamp >= 0x7ffffff0) {
+      this.triQueryStamp.fill(0);
+      this.currentQueryStamp = 1;
+    }
+    const stamp = this.currentQueryStamp;
+
+    const searchRadius = 4.55;
+    const gxMin = Math.floor((cx - searchRadius) / SPATIAL_CELL_SIZE);
+    const gxMax = Math.floor((cx + searchRadius) / SPATIAL_CELL_SIZE);
+    const gzMin = Math.floor((cz - searchRadius) / SPATIAL_CELL_SIZE);
+    const gzMax = Math.floor((cz + searchRadius) / SPATIAL_CELL_SIZE);
+
+    const clearMinY = groundY + 0.05;
+    const clearMaxY = groundY + 2.4;
+    const testHeights = [groundY + 0.35, groundY + 0.85];
+    let obstacleClearanceOk = true;
+    let minPropSq = 4.5 * 4.5;
+
+    for (let gx = gxMin; gx <= gxMax; gx++) {
+      for (let gz = gzMin; gz <= gzMax; gz++) {
+        const bucket = this.spatialGrid.get(cellKey(gx, gz));
+        if (!bucket) continue;
+
+        for (let b = 0; b < bucket.length; b++) {
+          const st = bucket[b];
+          if (this.triQueryStamp[st.id] === stamp) continue;
+          this.triQueryStamp[st.id] = stamp;
+
+          if (st.maxY <= clearMinY || st.minY >= clearMaxY) continue;
+          if (
+            st.maxX < cx - searchRadius ||
+            st.minX > cx + searchRadius ||
+            st.maxZ < cz - searchRadius ||
+            st.minZ > cz + searchRadius
+          ) {
+            continue;
+          }
+
+          _tri.a.set(st.ax, st.ay, st.az);
+          _tri.b.set(st.bx, st.by, st.bz);
+          _tri.c.set(st.cx, st.cy, st.cz);
+
+          if (obstacleClearanceOk) {
+            for (let h = 0; h < testHeights.length; h++) {
+              _sphereCenter.set(cx, testHeights[h], cz);
+              _tri.closestPointToPoint(_sphereCenter, _closestPt);
+              const dx = _closestPt.x - cx;
+              const dz = _closestPt.z - cz;
+              const dy = Math.abs(_closestPt.y - testHeights[h]);
+              if (dy <= 0.52 && dx * dx + dz * dz < 1.15 * 1.15) {
+                obstacleClearanceOk = false;
+                break;
+              }
+            }
+
+            if (obstacleClearanceOk) {
+              _sphereCenter.set(cx, groundY + 1.25, cz);
+              _tri.closestPointToPoint(_sphereCenter, _closestPt);
+              if (_closestPt.y > clearMinY && _closestPt.y < clearMaxY) {
+                const dx = _closestPt.x - cx;
+                const dz = _closestPt.z - cz;
+                if (dx * dx + dz * dz <= 0.82 * 0.82) {
+                  obstacleClearanceOk = false;
+                }
+              }
+            }
+          }
+
+          if (st.maxY >= groundY + 0.25 && st.minY <= groundY + 1.6) {
+            _sphereCenter.set(cx, groundY + 0.75, cz);
+            _tri.closestPointToPoint(_sphereCenter, _closestPt);
+            if (Math.abs(_closestPt.y - (groundY + 0.75)) <= 0.95) {
+              const dx = _closestPt.x - cx;
+              const dz = _closestPt.z - cz;
+              const dSq = dx * dx + dz * dz;
+              if (dSq < minPropSq) {
+                minPropSq = dSq;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    return {
+      obstacleClearanceOk,
+      nearestPropDistance: minPropSq < 4.5 * 4.5 ? Number(Math.sqrt(minPropSq).toFixed(2)) : null,
+    };
   }
 
   /**
@@ -1642,13 +1841,6 @@ export class MapEnvironment {
     zoneType: ChestZoneType,
     occupiedPositions: Array<{ x: number; z: number }> = []
   ): ChestPlacementMeta {
-    const checkRay = new THREE.Raycaster();
-    const down = new THREE.Vector3(0, -1, 0);
-    const origin = new THREE.Vector3();
-    const dir = new THREE.Vector3();
-    const normalMatrix = new THREE.Matrix3();
-    const worldNormal = new THREE.Vector3();
-
     const evaluateCandidate = (cx: number, cz: number): ChestPlacementMeta => {
       const tooCloseToOther = occupiedPositions.some((p) => {
         const dx = p.x - cx;
@@ -1671,20 +1863,20 @@ export class MapEnvironment {
       }
 
       const isBridgeArea = cz >= 629;
-      origin.set(cx, 30, cz);
-      checkRay.set(origin, down);
-      checkRay.far = isBridgeArea ? 34 : 45;
+      _chestRayOrigin.set(cx, 30, cz);
+      _chestRaycaster.set(_chestRayOrigin, _downVec);
+      _chestRaycaster.far = isBridgeArea ? 34 : 45;
 
       let groundHit: THREE.Intersection | undefined;
       if (isBridgeArea && this.bridgeColliderGroup.children.length > 0) {
-        const bHits = checkRay.intersectObjects(this.bridgeColliderGroup.children, true);
+        const bHits = _chestRaycaster.intersectObjects(this.bridgeColliderGroup.children, true);
         if (bHits.length > 0 && bHits[0].point.y >= -1.5) {
           groundHit = bHits[0];
         }
       }
 
       if (!groundHit && this.walkableMeshes.length > 0) {
-        const wHits = checkRay.intersectObjects(this.walkableMeshes, true);
+        const wHits = _chestRaycaster.intersectObjects(this.walkableMeshes, true);
         groundHit = wHits.find((h) => {
           if (h.point.y >= 18) return false;
           if (isBridgeArea && h.point.y < -2.0) return false;
@@ -1712,9 +1904,9 @@ export class MapEnvironment {
 
       let slopeNormalY = 1.0;
       if (groundHit.face) {
-        normalMatrix.getNormalMatrix(groundHit.object.matrixWorld);
-        worldNormal.copy(groundHit.face.normal).applyMatrix3(normalMatrix).normalize();
-        slopeNormalY = Number(worldNormal.y.toFixed(2));
+        _normalMat.getNormalMatrix(groundHit.object.matrixWorld);
+        _worldNorm.copy(groundHit.face.normal).applyMatrix3(_normalMat).normalize();
+        slopeNormalY = Number(_worldNorm.y.toFixed(2));
       }
 
       if (slopeNormalY < 0.65) {
@@ -1732,61 +1924,11 @@ export class MapEnvironment {
         };
       }
 
-      let obstacleClearanceOk = true;
-      let nearestPropDistance: number | null = null;
-
-      if (this.environmentMeshes.length > 0) {
-        for (let a = 0; a < 8; a++) {
-          const ang = (a * Math.PI) / 4;
-          dir.set(Math.cos(ang), 0, Math.sin(ang));
-          for (const hOff of [0.35, 0.85]) {
-            origin.set(cx, groundY + hOff, cz);
-            checkRay.set(origin, dir);
-            checkRay.far = 1.15;
-            if (checkRay.intersectObjects(this.environmentMeshes, false).length > 0) {
-              obstacleClearanceOk = false;
-              break;
-            }
-          }
-          if (!obstacleClearanceOk) break;
-        }
-
-        if (obstacleClearanceOk) {
-          const footprintOffsets: Array<[number, number]> = [
-            [0, 0],
-            [0.7, 0],
-            [-0.7, 0],
-            [0, 0.7],
-            [0, -0.7],
-          ];
-          for (const [ox, oz] of footprintOffsets) {
-            origin.set(cx + ox, groundY + 6.0, cz + oz);
-            checkRay.set(origin, down);
-            checkRay.far = 6.2;
-            const pHits = checkRay.intersectObjects(this.environmentMeshes, false);
-            if (pHits.some((ph) => ph.point.y > groundY + 0.05 && ph.point.y < groundY + 2.4)) {
-              obstacleClearanceOk = false;
-              break;
-            }
-          }
-        }
-
-        let minProp = 99;
-        for (let a = 0; a < 10; a++) {
-          const ang = (a * Math.PI) / 5;
-          dir.set(Math.cos(ang), 0, Math.sin(ang));
-          origin.set(cx, groundY + 0.75, cz);
-          checkRay.set(origin, dir);
-          checkRay.far = 4.5;
-          const pHits = checkRay.intersectObjects(this.environmentMeshes, false);
-          if (pHits.length > 0 && pHits[0].distance < minProp) {
-            minProp = pHits[0].distance;
-          }
-        }
-        if (minProp < 4.5) {
-          nearestPropDistance = Number(minProp.toFixed(2));
-        }
-      }
+      const { obstacleClearanceOk, nearestPropDistance } = this.querySpatialChestClearance(
+        cx,
+        groundY,
+        cz
+      );
 
       if (!obstacleClearanceOk) {
         return {
@@ -1810,16 +1952,16 @@ export class MapEnvironment {
 
       for (let s = 1; s <= steps; s++) {
         const sx = cx + (roadRefX - cx) * (s / steps);
-        origin.set(sx, 25, cz);
-        checkRay.set(origin, down);
-        checkRay.far = isBridgeArea ? 29 : 35;
+        _chestRayOrigin.set(sx, 25, cz);
+        _chestRaycaster.set(_chestRayOrigin, _downVec);
+        _chestRaycaster.far = isBridgeArea ? 29 : 35;
 
         let stepHit: THREE.Intersection | undefined;
         if (isBridgeArea && this.bridgeColliderGroup.children.length > 0) {
-          stepHit = checkRay.intersectObjects(this.bridgeColliderGroup.children, true)[0];
+          stepHit = _chestRaycaster.intersectObjects(this.bridgeColliderGroup.children, true)[0];
         }
         if (!stepHit && this.walkableMeshes.length > 0) {
-          stepHit = checkRay.intersectObjects(this.walkableMeshes, true).find(
+          stepHit = _chestRaycaster.intersectObjects(this.walkableMeshes, true).find(
             (h) => h.point.y < 18 && (!isBridgeArea || h.point.y >= -2.0)
           );
         }
@@ -1897,9 +2039,132 @@ export class MapEnvironment {
   }
 
   /**
+   * Validates & sanitizes a restored player coordinate against map bounds, walkable surfaces,
+   * solid obstacles, and chest colliders so refresh recovery never places the player in water/void/stuck.
+   */
+  public resolveSafePosition(
+    candidate: { x: number; y?: number; z: number } | null | undefined,
+    chestColliders: ChestCollisionVolume[] = []
+  ): { x: number; y: number; z: number; adjusted: boolean; reason: string } {
+    const fallbackToSpawn = (reason: string) => {
+      const sx = this.config.spawnPosition.x;
+      const sz = this.config.spawnPosition.z;
+      const g = this.queryGroundSurface(sx, sz, this.config.spawnPosition.y);
+      return {
+        x: sx,
+        y: g.walkable ? g.y : this.config.spawnPosition.y,
+        z: sz,
+        adjusted: true,
+        reason,
+      };
+    };
+
+    if (
+      !candidate ||
+      !Number.isFinite(candidate.x) ||
+      !Number.isFinite(candidate.z) ||
+      (candidate.y !== undefined && !Number.isFinite(candidate.y))
+    ) {
+      return fallbackToSpawn('Koordinat tersimpan tidak valid, dikembalikan ke spawn aman');
+    }
+
+    const clampedX = Math.max(-132, Math.min(132, candidate.x));
+    const clampedZ = Math.max(2.0, Math.min(776.0, candidate.z));
+    const refY = candidate.y !== undefined ? candidate.y : 2.0;
+
+    const tryPoint = (px: number, pz: number, baseRefY: number) => {
+      const ground = this.queryGroundSurface(px, pz, baseRefY);
+      if (!ground.walkable) return null;
+      const pushed = this.pushOutSolidObstacles(px, pz, ground.y, chestColliders);
+      const footCheck = this.isSafeFootprint(pushed.x, pushed.z, ground.y);
+      if (!footCheck.ok) return null;
+      // Ensure pushed result isn't overlapping any chest collider
+      for (let i = 0; i < chestColliders.length; i++) {
+        const c = chestColliders[i];
+        const minSep = this.config.playerColliderRadius + c.radius;
+        const dx = pushed.x - c.x;
+        const dz = pushed.z - c.z;
+        if (Math.abs(c.y - footCheck.center.y) <= 1.35 && dx * dx + dz * dz < minSep * minSep * 0.95) {
+          return null;
+        }
+      }
+      return {
+        x: pushed.x,
+        y: footCheck.center.y,
+        z: pushed.z,
+        pushed: pushed.collided,
+      };
+    };
+
+    const direct = tryPoint(clampedX, clampedZ, refY);
+    if (direct) {
+      const moved = direct.pushed || Math.abs(clampedX - candidate.x) > 0.01 || Math.abs(clampedZ - candidate.z) > 0.01;
+      return {
+        x: direct.x,
+        y: direct.y,
+        z: direct.z,
+        adjusted: moved,
+        reason: moved ? 'Posisi disesuaikan ke permukaan aman terdekat' : 'Posisi tersimpan tervalidasi aman',
+      };
+    }
+
+    // Search nearby safe walkable rings around saved coordinate before falling back to spawn
+    for (const r of [0.9, 1.8, 3.0, 4.5, 6.0]) {
+      for (let a = 0; a < 10; a++) {
+        const ang = (a / 10) * Math.PI * 2;
+        const res = tryPoint(clampedX + Math.cos(ang) * r, clampedZ + Math.sin(ang) * r, refY);
+        if (res) {
+          return {
+            x: res.x,
+            y: res.y,
+            z: res.z,
+            adjusted: true,
+            reason: `Posisi digeser +${r}m ke daratan aman`,
+          };
+        }
+      }
+    }
+
+    return fallbackToSpawn('Posisi tersimpan di area terlarang (air/jurang), dikembalikan ke spawn aman');
+  }
+
+  /**
    * Toggle developer 3D debug wireframe visibility (false in normal gameplay).
    */
   public setDebugMode(enabled: boolean) {
     this.debugVisualGroup.visible = enabled;
+  }
+
+  /**
+   * Disposes generated collider and debug geometries/materials (without disposing shared GLTF cache).
+   */
+  public dispose() {
+    this.bridgeColliderGroup.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const m = obj as THREE.Mesh;
+        m.geometry?.dispose();
+        if (Array.isArray(m.material)) {
+          m.material.forEach((mat) => mat.dispose());
+        } else {
+          m.material?.dispose();
+        }
+      }
+    });
+    this.bridgeColliderGroup.clear();
+
+    this.debugVisualGroup.traverse((obj) => {
+      const anyObj = obj as THREE.Mesh | THREE.Line | THREE.LineSegments;
+      if ('geometry' in anyObj && anyObj.geometry) {
+        anyObj.geometry.dispose();
+      }
+      if ('material' in anyObj && anyObj.material) {
+        if (Array.isArray(anyObj.material)) {
+          anyObj.material.forEach((mat) => mat.dispose());
+        } else {
+          anyObj.material.dispose();
+        }
+      }
+    });
+    this.debugObstacleWireframes.clear();
   }
 }

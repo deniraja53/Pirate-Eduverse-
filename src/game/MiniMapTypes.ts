@@ -1,5 +1,5 @@
 /**
- * Tactical Mini-Map Live Telemetry Types & World-to-2D Projection Helpers
+ * Tactical Mini-Map & Full Map Live Telemetry Types & World-to-2D Projection Helpers
  * Connects directly to 3D CharacterController & GLB-validated TreasureChest coordinates.
  * Created by Deni Raja99
  */
@@ -8,10 +8,11 @@ export interface MiniMapChestPoint {
   chestId: string;
   questionId: string;
   questionNumber: number;
+  locationName?: string;
   x: number;
   z: number;
   active: boolean;
-  completed: boolean;
+  completed: boolean; // true once student's answer is persisted (whether right or wrong)
   locked: boolean;
 }
 
@@ -64,7 +65,7 @@ export interface ProjectedPoint {
  * Uses uniform 1:1 world scale aligned with PirateGameCanvas camera axes:
  *   - Up on canvas (-dy) = +Z (Start -> Finish)
  *   - Right on canvas (+dx) = -X (matching _camRight = (+Z) x (+Y) = (-1, 0, 0))
- * Clamps safely inside usableRadiusPx so no point ever clips outside the ring border.
+ * Clamps safely inside usableRadiusPx so no point ever clips outside the circular ring border.
  */
 export function projectWorldToMiniMap(
   worldX: number,
@@ -78,16 +79,14 @@ export function projectWorldToMiniMap(
   const halfSpanX = Math.max(40, (bounds.maxX - bounds.minX) * 0.5);
   const halfSpanZ = Math.max(40, (bounds.maxZ - bounds.minZ) * 0.5);
 
-  // Uniform circular world radius guaranteeing full corridor visibility without axis distortion
   const worldHalfSpan = Math.max(halfSpanX, halfSpanZ) * 1.06;
   const scale = usableRadiusPx / worldHalfSpan;
 
   let dx = (centerX - worldX) * scale;
   let dy = (centerZ - worldZ) * scale;
 
-  // Clamp strictly inside circular safe radius
   const dist = Math.hypot(dx, dy);
-  const maxR = Math.max(1, usableRadiusPx - 2.5);
+  const maxR = Math.max(1, usableRadiusPx - 2.0);
   if (dist > maxR) {
     const ratio = maxR / dist;
     dx *= ratio;
@@ -97,5 +96,36 @@ export function projectWorldToMiniMap(
   return {
     x: centerPx + dx,
     y: centerPx + dy,
+  };
+}
+
+/**
+ * Projects 3D world (X, Z) coordinates into a rectangular Full Map canvas (px)
+ * using the exact same world orientation (+Z = Up, -X = Right) and uniform 1:1 scale
+ * as the circular mini-map so both views are 100% geometrically consistent.
+ */
+export function projectWorldToRectMap(
+  worldX: number,
+  worldZ: number,
+  bounds: MiniMapWorldBounds,
+  widthPx: number,
+  heightPx: number,
+  paddingPx: number = 28
+): ProjectedPoint {
+  const centerX = (bounds.minX + bounds.maxX) * 0.5;
+  const centerZ = (bounds.minZ + bounds.maxZ) * 0.5;
+  const spanX = Math.max(80, bounds.maxX - bounds.minX);
+  const spanZ = Math.max(80, bounds.maxZ - bounds.minZ);
+
+  const availW = Math.max(40, widthPx - paddingPx * 2);
+  const availH = Math.max(40, heightPx - paddingPx * 2);
+  const scale = Math.min(availW / spanX, availH / spanZ);
+
+  const rawX = widthPx * 0.5 + (centerX - worldX) * scale;
+  const rawY = heightPx * 0.5 + (centerZ - worldZ) * scale;
+
+  return {
+    x: Math.max(paddingPx * 0.5, Math.min(widthPx - paddingPx * 0.5, rawX)),
+    y: Math.max(paddingPx * 0.5, Math.min(heightPx - paddingPx * 0.5, rawY)),
   };
 }

@@ -1,23 +1,28 @@
 /**
- * QuestMiniMap Component — Pirate Adventure Tactical Circular Mini-Map
+ * QuestMiniMap Component — Compact Pirate Adventure Circular Mini-Map (V10)
  * Features:
- * - Perfect circular clipping (rounded-full overflow-hidden)
- * - Positioned beneath top-right HUD settings buttons with pointer-events-none
- * - Reads live mutable 3D telemetry ref via a single requestAnimationFrame loop (zero React re-renders)
- * - Displays directional cyan/white player arrow, pulsing gold dots for uncompleted chests,
- *   and gentle fade-out when chests are completed.
+ * - Compact circular size (~100-112px desktop, responsive on mobile) beneath top-right settings buttons
+ * - RED dots (#ef4444) for unanswered active chests, GREEN dots (#22c55e) for answered/completed chests
+ * - Bright cyan/white directional arrow synced real-time to 3D player (X, Z) & yaw rotation
+ * - Clickable to open the Full Pirate Quest Map modal
+ * - Zero React re-render overhead: single Canvas 2D requestAnimationFrame loop cleanly cancelled on unmount
  * Created by Deni Raja99
  */
 
 import React, { useEffect, useRef } from 'react';
+import { Maximize2 } from 'lucide-react';
 import { MiniMapLiveState, projectWorldToMiniMap } from '../game/MiniMapTypes';
 
 interface QuestMiniMapProps {
   miniMapStateRef: React.MutableRefObject<MiniMapLiveState | null>;
+  onOpenFullMap?: () => void;
 }
 
-export const QuestMiniMap: React.FC<QuestMiniMapProps> = ({ miniMapStateRef }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+export const QuestMiniMap: React.FC<QuestMiniMapProps> = ({
+  miniMapStateRef,
+  onOpenFullMap,
+}) => {
+  const containerRef = useRef<HTMLButtonElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -28,11 +33,11 @@ export const QuestMiniMap: React.FC<QuestMiniMapProps> = ({ miniMapStateRef }) =
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    let sizePx = container.clientWidth || 148;
+    let sizePx = container.clientWidth || 108;
     let dpr = Math.min(window.devicePixelRatio || 1, 2);
 
     const applyCanvasSize = () => {
-      const nextSize = Math.max(96, container.clientWidth || 148);
+      const nextSize = Math.max(76, container.clientWidth || 108);
       const nextDpr = Math.min(window.devicePixelRatio || 1, 2);
       sizePx = nextSize;
       dpr = nextDpr;
@@ -50,10 +55,6 @@ export const QuestMiniMap: React.FC<QuestMiniMapProps> = ({ miniMapStateRef }) =
       resizeObserver.observe(container);
     }
 
-    // Track recently completed chests for smooth 420ms fade-out animation
-    const prevCompletedMap = new Map<string, boolean>();
-    const fadeOutStartMsMap = new Map<string, number>();
-
     let rafId = 0;
 
     const renderFrame = (nowMs: number) => {
@@ -62,154 +63,115 @@ export const QuestMiniMap: React.FC<QuestMiniMapProps> = ({ miniMapStateRef }) =
 
       const center = sizePx * 0.5;
       const outerR = center - 1.5;
-      const usableR = Math.max(24, outerR - 10);
+      const usableR = Math.max(22, outerR - 7);
 
-      // Circular clip boundary so nothing ever bleeds outside the circle
+      // Circular clip boundary so all dots & player indicator stay cleanly inside
       ctx.save();
       ctx.beginPath();
       ctx.arc(center, center, outerR, 0, Math.PI * 2);
       ctx.clip();
 
-      // Subtle nautical dark ocean radar gradient backdrop
-      const bgGrad = ctx.createRadialGradient(center, center, 4, center, center, outerR);
-      bgGrad.addColorStop(0, 'rgba(13, 39, 54, 0.58)');
-      bgGrad.addColorStop(0.75, 'rgba(8, 24, 38, 0.68)');
-      bgGrad.addColorStop(1, 'rgba(4, 14, 24, 0.78)');
+      // Dark translucent ocean backdrop
+      const bgGrad = ctx.createRadialGradient(center, center, 3, center, center, outerR);
+      bgGrad.addColorStop(0, 'rgba(11, 38, 54, 0.62)');
+      bgGrad.addColorStop(0.76, 'rgba(7, 23, 37, 0.72)');
+      bgGrad.addColorStop(1, 'rgba(4, 14, 24, 0.82)');
       ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, sizePx, sizePx);
 
-      // Concentric tactical radar rings
-      ctx.strokeStyle = 'rgba(217, 179, 98, 0.14)';
-      ctx.lineWidth = 1;
-      [0.34, 0.67, 0.94].forEach((ratio) => {
+      // Subtle concentric nautical radar rings
+      ctx.strokeStyle = 'rgba(217, 179, 98, 0.16)';
+      ctx.lineWidth = 0.85;
+      [0.36, 0.7, 0.96].forEach((ratio) => {
         ctx.beginPath();
         ctx.arc(center, center, usableR * ratio, 0, Math.PI * 2);
         ctx.stroke();
       });
 
-      // Subtle compass crosshairs
+      // Faint compass crosshairs
       ctx.strokeStyle = 'rgba(217, 179, 98, 0.1)';
       ctx.beginPath();
-      ctx.moveTo(center, 12);
-      ctx.lineTo(center, sizePx - 16);
-      ctx.moveTo(12, center);
-      ctx.lineTo(sizePx - 12, center);
+      ctx.moveTo(center, 9);
+      ctx.lineTo(center, sizePx - 9);
+      ctx.moveTo(9, center);
+      ctx.lineTo(sizePx - 9, center);
       ctx.stroke();
 
-      // Tiny cardinal North (U) indicator at top rim
-      ctx.font = `700 ${Math.max(8, Math.round(sizePx * 0.06))}px ui-sans-serif, system-ui, sans-serif`;
+      // Tiny North indicator at top rim
+      ctx.font = `700 ${Math.max(7.5, Math.round(sizePx * 0.072))}px ui-sans-serif, system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      ctx.fillStyle = 'rgba(251, 191, 36, 0.72)';
-      ctx.fillText('U', center, 4);
+      ctx.fillStyle = 'rgba(251, 191, 36, 0.75)';
+      ctx.fillText('U', center, 2.5);
 
       const state = miniMapStateRef.current;
       if (state && state.ready) {
         const { worldBounds, chests, playerX, playerZ, playerRotationY } = state;
 
-        // 1. Render active chest markers (uncompleted pulsing gold, fade-out on completion)
+        // 1. Render active chest markers:
+        //    - RED (#ef4444) = unanswered / not completed yet
+        //    - GREEN (#22c55e) = answered / completed (regardless of right/wrong)
         for (let i = 0; i < chests.length; i++) {
           const ch = chests[i];
           if (!ch.active) continue;
 
-          const wasCompleted = prevCompletedMap.get(ch.questionId);
-          if (wasCompleted === false && ch.completed) {
-            fadeOutStartMsMap.set(ch.questionId, nowMs);
-          } else if (!ch.completed) {
-            fadeOutStartMsMap.delete(ch.questionId);
-          }
-          prevCompletedMap.set(ch.questionId, ch.completed);
-
-          let alpha = 1;
-          let scaleFactor = 1;
-
-          if (ch.completed) {
-            const fadeStart = fadeOutStartMsMap.get(ch.questionId);
-            if (fadeStart === undefined) {
-              continue; // Completed chests stay removed from map
-            }
-            const progress = (nowMs - fadeStart) / 420;
-            if (progress >= 1) {
-              fadeOutStartMsMap.delete(ch.questionId);
-              continue;
-            }
-            alpha = Math.max(0, 1 - progress);
-            scaleFactor = 1 - progress * 0.55;
-          }
-
           const pt = projectWorldToMiniMap(ch.x, ch.z, worldBounds, center, usableR);
 
-          if (!ch.completed && !ch.locked) {
-            // Subtle pulsing gold aura for active uncompleted chests
-            const pulse = 0.5 + 0.5 * Math.sin(nowMs * 0.0042 + i * 0.9);
+          if (!ch.completed) {
+            // Soft pulse ring for unanswered RED chests
+            const pulse = 0.5 + 0.5 * Math.sin(nowMs * 0.0044 + i * 0.85);
             ctx.beginPath();
-            ctx.arc(pt.x, pt.y, (4.2 + pulse * 2.4) * scaleFactor, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(250, 204, 21, ${(0.22 - pulse * 0.12) * alpha})`;
+            ctx.arc(pt.x, pt.y, 3.6 + pulse * 1.9, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(239, 68, 68, ${0.26 - pulse * 0.14})`;
             ctx.fill();
           }
 
-          // Chest point dot
-          const dotR = (ch.locked ? 2.4 : 3.1) * scaleFactor;
           ctx.beginPath();
-          ctx.arc(pt.x, pt.y, dotR, 0, Math.PI * 2);
-          ctx.fillStyle = ch.completed
-            ? `rgba(52, 211, 153, ${alpha})`
-            : ch.locked
-            ? `rgba(245, 158, 11, ${0.48 * alpha})`
-            : `rgba(250, 204, 21, ${0.98 * alpha})`;
+          ctx.arc(pt.x, pt.y, ch.completed ? 2.4 : 2.8, 0, Math.PI * 2);
+          ctx.fillStyle = ch.completed ? '#22c55e' : '#ef4444';
           ctx.fill();
 
-          if (!ch.locked) {
-            ctx.lineWidth = 0.9;
-            ctx.strokeStyle = `rgba(15, 23, 42, ${0.8 * alpha})`;
-            ctx.stroke();
-          }
+          ctx.lineWidth = 0.85;
+          ctx.strokeStyle = ch.completed
+            ? 'rgba(6, 78, 59, 0.9)'
+            : 'rgba(127, 29, 29, 0.95)';
+          ctx.stroke();
         }
 
-        // 2. Render directional Player indicator (bright cyan + crisp white edge)
+        // 2. Render Player directional indicator (bright cyan + crisp white outline)
         const pPt = projectWorldToMiniMap(playerX, playerZ, worldBounds, center, usableR);
 
         ctx.save();
         ctx.translate(pPt.x, pPt.y);
-        // -playerRotationY matches canvas UP (+Z) & canvas RIGHT (-X)
         ctx.rotate(-playerRotationY);
 
-        // Soft cyan glow behind player arrow
         ctx.beginPath();
-        ctx.arc(0, 0, 7.2, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(34, 211, 238, 0.24)';
+        ctx.arc(0, 0, 5.8, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(34, 211, 238, 0.25)';
         ctx.fill();
 
-        // Directional chevron/arrow pointing forward
         ctx.beginPath();
-        ctx.moveTo(0, -6.4);
-        ctx.lineTo(4.6, 4.4);
-        ctx.lineTo(0, 2.2);
-        ctx.lineTo(-4.6, 4.4);
+        ctx.moveTo(0, -5.2);
+        ctx.lineTo(3.8, 3.6);
+        ctx.lineTo(0, 1.8);
+        ctx.lineTo(-3.8, 3.6);
         ctx.closePath();
 
         ctx.fillStyle = '#22d3ee';
         ctx.fill();
-        ctx.lineWidth = 1.25;
+        ctx.lineWidth = 1.15;
         ctx.strokeStyle = '#ffffff';
         ctx.stroke();
 
         ctx.restore();
       }
 
-      // Tiny unobtrusive QUEST MAP label at bottom inside rim
-      ctx.font = `700 ${Math.max(7.5, Math.round(sizePx * 0.052))}px ui-sans-serif, system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
-      ctx.fillStyle = 'rgba(253, 230, 138, 0.58)';
-      ctx.fillText('QUEST MAP', center, sizePx - 4.5);
-
       ctx.restore();
 
-      // Subtle inner bevel ring
+      // Subtle inner gold bevel
       ctx.beginPath();
       ctx.arc(center, center, outerR, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(217, 179, 98, 0.25)';
+      ctx.strokeStyle = 'rgba(217, 179, 98, 0.28)';
       ctx.lineWidth = 1;
       ctx.stroke();
 
@@ -225,14 +187,24 @@ export const QuestMiniMap: React.FC<QuestMiniMapProps> = ({ miniMapStateRef }) =
   }, [miniMapStateRef]);
 
   return (
-    <div
+    <button
       ref={containerRef}
+      type="button"
+      onClick={onOpenFullMap}
       data-testid="quest-minimap"
-      aria-hidden="true"
-      className="pointer-events-none select-none w-[112px] h-[112px] sm:w-[136px] sm:h-[136px] lg:w-[152px] lg:h-[152px] rounded-full overflow-hidden border border-amber-500/45 bg-slate-950/55 backdrop-blur-xs shadow-[0_8px_24px_rgba(0,0,0,0.52)]"
+      aria-label="Buka Peta Petualangan Penuh"
+      title="Klik untuk membuka Peta Penuh"
+      className="group relative pointer-events-auto cursor-pointer select-none w-[86px] h-[86px] sm:w-[98px] sm:h-[98px] lg:w-[110px] lg:h-[110px] rounded-full overflow-hidden border border-amber-500/55 hover:border-amber-300 bg-[#0b1422]/75 shadow-[0_6px_18px_rgba(0,0,0,0.52)] transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-amber-400/60"
       style={{ borderRadius: '50%' }}
     >
-      <canvas ref={canvasRef} className="block w-full h-full" />
-    </div>
+      <canvas ref={canvasRef} className="block w-full h-full pointer-events-none" />
+      {/* Subtle expand hint badge on hover */}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute bottom-1.5 right-1.5 w-4 h-4 rounded-full bg-slate-950/80 border border-amber-400/60 text-amber-300 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+      >
+        <Maximize2 className="w-2.5 h-2.5" />
+      </span>
+    </button>
   );
 };

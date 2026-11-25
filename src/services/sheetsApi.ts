@@ -1,8 +1,6 @@
 /**
- * Google Apps Script Web App Integration & Updated Code.gs Template (V4)
- * Supports 4 synchronized sheets: Siswa, BankSoal, Hasil, and Rekap
- * with idempotent upsert keys (studentId, quizId+questionId, resultId, sessionId)
- * and honest failure reporting (never returns success: true on failure).
+ * Google Apps Script Web App Integration & Updated Code.gs Template (V11 + V4)
+ * Keep GOOGLE_APPS_SCRIPT_CODE synchronized 1:1 with /Code.gs
  * Created by Deni Raja99 - Pirate Academy
  */
 
@@ -15,85 +13,128 @@ export interface SheetsApiResponse<T = unknown> {
   data?: T;
 }
 
-/**
- * Updated Google Apps Script (Code.gs) template for teachers (V4).
- * Covers: Siswa, BankSoal, Hasil, Rekap with idempotent upserts & summary formulas.
- */
 export const GOOGLE_APPS_SCRIPT_CODE = `/**
  * ============================================================================
- * PIRATE ACADEMY 3D - GOOGLE APPS SCRIPT DATABASE BACKEND (V4 REAL-TIME SYNC)
+ * PIRATE ACADEMY 3D - GOOGLE APPS SCRIPT DATABASE BACKEND (V11 + V4 COMPATIBLE)
  * Created by Deni Raja99
  * ============================================================================
- * Petunjuk Instalasi:
- * 1. Buka Google Sheets baru di https://sheets.new
- * 2. Beri nama spreadsheet: "Database Pirate Academy - [Nama Sekolah/Kelas]"
- * 3. Klik menu: Ekstensi > Apps Script
- * 4. Hapus semua kode bawaan dan tempelkan (Paste) seluruh kode ini.
- * 5. Klik Simpan (ikon disket / Ctrl+S).
- * 6. Klik "Terapkan" (Deploy) > "Penerapan baru" (New deployment).
- * 7. Pilih Jenis: "Aplikasi web" (Web app).
- * 8. Konfigurasi WAJIB:
- *    - Deskripsi: "Pirate Academy V4 API"
- *    - Jalankan sebagai (Execute as): "Saya" (Me)
- *    - Yang memiliki akses (Who has access): "Siapa saja" (Anyone)
- * 9. Klik "Terapkan" (Deploy) & selesaikan otorisasi izin Google.
- * 10. Salin URL Web App (/exec) ke tab Pengaturan Portal Guru, lalu klik Uji Koneksi.
- *
- * Batasan & Catatan Penting:
- * - Akses "Anyone" hanya menerima permintaan HTTPS POST/GET ke skrip ini; URL tidak
- *   perlu dibagikan ke siswa karena pengiriman dilakukan oleh server backend aplikasi.
- * - Penulisan menggunakan LockService dan ID unik (resultId, sessionId, studentId)
- *   sehingga pengiriman ulang/retry tidak pernah menggandakan baris data.
+ * Struktur Sheet Otomatis:
+ * 1. BankSoal         : ID_Soal, Nomor, Jenis_Soal, Pertanyaan, Opsi_JSON,
+ *                       Kunci_Jawaban, Penjelasan, Gambar_URL, Status, Versi,
+ *                       Updated_At, ID_Paket
+ * 2. RekapNilai       : ID_Sesi, ID_Siswa, Nama_Siswa, Kelas, ID_Paket,
+ *                       Judul_Kuis, Soal_Selesai, Total_Nilai, Nilai_Maksimum,
+ *                       Persentase, Status_Pengerjaan, Menunggu_Penilaian,
+ *                       Terakhir_Sinkron
+ * 3. Siswa            : studentId, Nama, Kelas, Status, Terakhir_Diperbarui
+ * 4. Hasil            : resultId, Timestamp, studentId, Nama_Siswa, Kelas,
+ *                       quizId, questionId, Teks_Pertanyaan, Jawaban_Siswa,
+ *                       Kunci_Jawaban, Nilai, Nilai_Maksimum, Status_Penilaian,
+ *                       Durasi_Pengerjaan
+ * 5. LogSinkronisasi  : ID_Operasi, Jenis_Operasi, Status, Jumlah_Data,
+ *                       Waktu_Mulai, Waktu_Selesai, Pesan
+ * 6. Pengaturan       : Kunci_Pengaturan, Nilai, Diperbarui_Pada
  * ============================================================================
  */
 
 const SHEETS = {
-  SISWA: 'Siswa',
   BANK_SOAL: 'BankSoal',
+  REKAP_NILAI: 'RekapNilai',
+  SISWA: 'Siswa',
   HASIL: 'Hasil',
-  REKAP: 'Rekap'
+  LOG_SINKRONISASI: 'LogSinkronisasi',
+  PENGATURAN: 'Pengaturan',
+  REKAP_LEGACY: 'Rekap'
 };
+
+const MAX_ROWS_PER_REQUEST = 500;
+
+function escapeFormulaCell(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'number' || typeof value === 'boolean') return value;
+  const str = String(value);
+  if (!str) return '';
+  if (/^[=+\\-@\\t\\r]/.test(str)) {
+    return "'" + str;
+  }
+  return str;
+}
+
+function verifyOptionalToken(providedToken) {
+  const expected = PropertiesService.getScriptProperties().getProperty('PIRATE_SYNC_TOKEN');
+  if (!expected) return true;
+  return String(providedToken || '') === String(expected);
+}
 
 function setupSpreadsheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  // 1. Sheet Siswa
-  initSheet(ss, SHEETS.SISWA, [
-    'studentId', 'Nama', 'Kelas', 'Status', 'Terakhir Diperbarui'
-  ]);
-
-  // 2. Sheet BankSoal
   initSheet(ss, SHEETS.BANK_SOAL, [
-    'quizId', 'questionId', 'Nomor Soal', 'Jenis Soal', 'Teks Pertanyaan',
-    'Pilihan Jawaban', 'Kunci Jawaban', 'Bobot Nilai', 'Status Publikasi', 'Terakhir Diperbarui'
+    'ID_Soal', 'Nomor', 'Jenis_Soal', 'Pertanyaan', 'Opsi_JSON',
+    'Kunci_Jawaban', 'Penjelasan', 'Gambar_URL', 'Status', 'Versi',
+    'Updated_At', 'ID_Paket'
   ]);
 
-  // 3. Sheet Hasil (Per jawaban siswa, idempoten berdasarkan resultId)
-  initSheet(ss, SHEETS.HASIL, [
-    'resultId', 'Timestamp', 'studentId', 'Nama Siswa', 'Kelas', 'quizId',
-    'questionId', 'Teks Pertanyaan', 'Jawaban Siswa', 'Kunci Jawaban',
-    'Nilai', 'Nilai Maksimum', 'Status Penilaian', 'Durasi Pengerjaan'
+  const rekapSheet = initSheet(ss, SHEETS.REKAP_NILAI, [
+    'ID_Sesi', 'ID_Siswa', 'Nama_Siswa', 'Kelas', 'ID_Paket', 'Judul_Kuis',
+    'Soal_Selesai', 'Total_Nilai', 'Nilai_Maksimum', 'Persentase (%)',
+    'Status_Pengerjaan', 'Menunggu_Penilaian', 'Terakhir_Sinkron'
   ]);
 
-  // 4. Sheet Rekap (Ringkasan per sesi + Ringkasan Otomatis di baris atas/kolom kanan)
-  const rekapSheet = initSheet(ss, SHEETS.REKAP, [
-    'sessionId', 'studentId', 'Nama Siswa', 'Kelas', 'quizId', 'Judul Kuis',
-    'Soal Selesai', 'Total Nilai', 'Nilai Maksimum', 'Persentase (%)',
-    'Status Pengerjaan', 'Menunggu Penilaian', 'Terakhir Sinkron'
-  ]);
-
-  // Tambahkan ringkasan statistik otomatis menggunakan formula Google Sheets di kolom O-P
   if (rekapSheet.getRange('O1').getValue() !== 'RINGKASAN OTOMATIS') {
     rekapSheet.getRange('O1:P1').setValues([['RINGKASAN OTOMATIS', 'NILAI']])
-      .setFontWeight('bold').setBackground('#0f172a').setFontColor('#fbbf24');
+      .setFontWeight('bold').setBackground('#281647').setFontColor('#facc15');
     rekapSheet.getRange('O2:P6').setValues([
-      ['Total Sesi Siswa', '=MAX(0, COUNTA(A2:A)-0)'],
+      ['Total Sesi Siswa', '=MAX(0, COUNTA(A2:A))'],
       ['Rata-rata Persentase (%)', '=IFERROR(AVERAGE(J2:J), 0)'],
       ['Skor Tertinggi (%)', '=IFERROR(MAX(J2:J), 0)'],
       ['Skor Terendah (%)', '=IFERROR(MIN(J2:J), 0)'],
       ['Total Sesi Selesai', '=COUNTIF(K2:K, "Selesai")']
     ]);
   }
+
+  initSheet(ss, SHEETS.SISWA, [
+    'studentId', 'Nama', 'Kelas', 'Status', 'Terakhir_Diperbarui'
+  ]);
+
+  initSheet(ss, SHEETS.HASIL, [
+    'resultId', 'Timestamp', 'studentId', 'Nama_Siswa', 'Kelas', 'quizId',
+    'questionId', 'Teks_Pertanyaan', 'Jawaban_Siswa', 'Kunci_Jawaban',
+    'Nilai', 'Nilai_Maksimum', 'Status_Penilaian', 'Durasi_Pengerjaan'
+  ]);
+
+  initSheet(ss, SHEETS.LOG_SINKRONISASI, [
+    'ID_Operasi', 'Jenis_Operasi', 'Status', 'Jumlah_Data',
+    'Waktu_Mulai', 'Waktu_Selesai', 'Pesan'
+  ]);
+
+  const settingsSheet = initSheet(ss, SHEETS.PENGATURAN, [
+    'Kunci_Pengaturan', 'Nilai', 'Diperbarui_Pada'
+  ]);
+
+  upsertByCompositeKey(settingsSheet, [0], ['Spreadsheet_ID'], [
+    'Spreadsheet_ID',
+    ss.getId(),
+    new Date().toISOString()
+  ]);
+  upsertByCompositeKey(settingsSheet, [0], ['Versi_Script'], [
+    'Versi_Script',
+    'V11-PirateAcademy',
+    new Date().toISOString()
+  ]);
+
+  return {
+    spreadsheetId: ss.getId(),
+    spreadsheetName: ss.getName(),
+    sheets: [
+      SHEETS.BANK_SOAL,
+      SHEETS.REKAP_NILAI,
+      SHEETS.SISWA,
+      SHEETS.HASIL,
+      SHEETS.LOG_SINKRONISASI,
+      SHEETS.PENGATURAN
+    ]
+  };
 }
 
 function initSheet(ss, name, headers) {
@@ -103,17 +144,18 @@ function initSheet(ss, name, headers) {
     sheet.appendRow(headers);
     sheet.getRange(1, 1, 1, headers.length)
       .setFontWeight('bold')
-      .setBackground('#1e293b')
-      .setFontColor('#fde68a');
+      .setBackground('#281647')
+      .setFontColor('#facc15');
     sheet.setFrozenRows(1);
   }
   return sheet;
 }
 
 function upsertByCompositeKey(sheet, keyColumnIndices, keyValues, rowData) {
+  const safeRow = rowData.map(escapeFormulaCell);
   const lastRow = sheet.getLastRow();
   if (lastRow >= 2) {
-    const numCols = Math.max(sheet.getLastColumn(), rowData.length);
+    const numCols = Math.max(sheet.getLastColumn(), safeRow.length);
     const existing = sheet.getRange(2, 1, lastRow - 1, numCols).getValues();
     for (let i = 0; i < existing.length; i++) {
       let match = true;
@@ -125,31 +167,73 @@ function upsertByCompositeKey(sheet, keyColumnIndices, keyValues, rowData) {
         }
       }
       if (match) {
-        sheet.getRange(i + 2, 1, 1, rowData.length).setValues([rowData]);
+        sheet.getRange(i + 2, 1, 1, safeRow.length).setValues([safeRow]);
         return 'updated';
       }
     }
   }
-  sheet.appendRow(rowData);
+  sheet.appendRow(safeRow);
   return 'inserted';
 }
 
+function appendLogEntry(ss, entry) {
+  const logSheet = ss.getSheetByName(SHEETS.LOG_SINKRONISASI);
+  if (!logSheet) return;
+  const now = new Date().toISOString();
+  const opId = String(entry.idOperasi || ('op-' + Date.now()));
+  upsertByCompositeKey(logSheet, [0], [opId], [
+    opId,
+    entry.jenisOperasi || 'Sinkronisasi',
+    entry.status || 'Sukses',
+    Number(entry.jumlahData || 0),
+    entry.waktuMulai || now,
+    entry.waktuSelesai || now,
+    entry.pesan || ''
+  ]);
+}
+
+function getIntegrationStatus() {
+  const info = setupSpreadsheet();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const bankSheet = ss.getSheetByName(SHEETS.BANK_SOAL);
+  const rekapSheet = ss.getSheetByName(SHEETS.REKAP_NILAI);
+
+  return {
+    success: true,
+    message: 'Pirate Academy V11 Apps Script API aktif dan siap menerima sinkronisasi!',
+    spreadsheetId: info.spreadsheetId,
+    spreadsheetName: info.spreadsheetName,
+    sheets: info.sheets,
+    bankSoalRows: bankSheet ? Math.max(0, bankSheet.getLastRow() - 1) : 0,
+    rekapRows: rekapSheet ? Math.max(0, rekapSheet.getLastRow() - 1) : 0,
+    timestamp: new Date().toISOString()
+  };
+}
+
+function testConnection() {
+  const status = getIntegrationStatus();
+  Logger.log(JSON.stringify(status, null, 2));
+  return status;
+}
+
 function doGet(e) {
-  setupSpreadsheet();
+  const providedToken = e && e.parameter && e.parameter.syncToken;
+  if (!verifyOptionalToken(providedToken)) {
+    return jsonResponse({
+      success: false,
+      message: 'Token sinkronisasi Apps Script tidak cocok (Unauthorized).'
+    });
+  }
+
   const action = (e && e.parameter && e.parameter.action) || 'status';
 
   if (action === 'status') {
-    return jsonResponse({
-      success: true,
-      message: 'Pirate Academy V4 Apps Script API aktif dan siap menerima sinkronisasi real-time!',
-      sheets: Object.values(SHEETS),
-      timestamp: new Date().toISOString()
-    });
+    return jsonResponse(getIntegrationStatus());
   }
 
   if (action === 'getRekap') {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const sheet = ss.getSheetByName(SHEETS.REKAP);
+    const sheet = ss.getSheetByName(SHEETS.REKAP_NILAI) || ss.getSheetByName(SHEETS.REKAP_LEGACY);
     if (!sheet || sheet.getLastRow() < 2) {
       return jsonResponse({ success: true, data: [] });
     }
@@ -170,50 +254,151 @@ function doPost(e) {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
   try {
+    if (!e || !e.postData || !e.postData.contents || !String(e.postData.contents).trim()) {
+      return jsonResponse({ success: false, status: 'error', message: 'Payload POST kosong.' });
+    }
+
+    let contents;
+    try {
+      contents = JSON.parse(e.postData.contents);
+    } catch (parseErr) {
+      return jsonResponse({
+        success: false,
+        status: 'error',
+        message: 'Body permintaan POST bukan JSON yang valid.'
+      });
+    }
+
+    if (!contents || typeof contents !== 'object') {
+      return jsonResponse({
+        success: false,
+        status: 'error',
+        message: 'Struktur payload JSON tidak valid.'
+      });
+    }
+
+    if (!verifyOptionalToken(contents.syncToken)) {
+      return jsonResponse({
+        success: false,
+        status: 'error',
+        message: 'Token sinkronisasi Apps Script tidak cocok (Unauthorized).'
+      });
+    }
+
     setupSpreadsheet();
-    const contents = JSON.parse(e.postData.contents);
     const action = contents.action;
     const payload = contents.payload;
 
-    if (action === 'saveSessionV4') {
-      return handleSaveSessionV4(payload);
-    }
     if (action === 'syncPackage') {
       return handleSyncPackage(payload);
     }
-    // Kompatibilitas mundur jika masih menerima saveSession lama
+    if (action === 'saveSessionV4') {
+      return handleSaveSessionV4(payload);
+    }
     if (action === 'saveSession') {
       return handleLegacySession(payload);
     }
 
-    return jsonResponse({ success: false, message: 'Aksi POST tidak didukung: ' + action });
+    return jsonResponse({
+      success: false,
+      status: 'error',
+      message: 'Aksi POST tidak didukung: ' + String(action || '')
+    });
   } catch (err) {
-    return jsonResponse({ success: false, message: 'Kesalahan Apps Script: ' + err.toString() });
+    return jsonResponse({
+      success: false,
+      status: 'error',
+      message: 'Kesalahan Apps Script: ' + (err && err.message ? err.message : String(err))
+    });
   } finally {
     lock.releaseLock();
   }
 }
 
+function handleSyncPackage(pkg) {
+  if (!pkg || !Array.isArray(pkg.questions)) {
+    return jsonResponse({ success: false, status: 'error', message: 'Payload BankSoal tidak valid.' });
+  }
+  if (pkg.questions.length > MAX_ROWS_PER_REQUEST) {
+    return jsonResponse({
+      success: false,
+      status: 'error',
+      message: 'Jumlah soal melebihi batas maksimum ' + MAX_ROWS_PER_REQUEST + ' baris per permintaan.'
+    });
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const bankSheet = ss.getSheetByName(SHEETS.BANK_SOAL);
+  const now = new Date().toISOString();
+  let count = 0;
+
+  pkg.questions.forEach(q => {
+    const idSoal = q.questionId || ('soal-' + count);
+    const opsiStr = q.opsiJson || q.pilihanJawaban || '-';
+    upsertByCompositeKey(bankSheet, [0, 11], [idSoal, q.quizId || pkg.quizId || ''], [
+      idSoal,
+      Number(q.nomorSoal || (count + 1)),
+      q.jenisSoal || 'multiple_choice',
+      q.teksPertanyaan || '',
+      opsiStr,
+      q.kunciJawaban || 'Belum ditentukan',
+      q.pembahasan || '',
+      q.gambarUrl || '',
+      q.statusPublikasi || 'Aktif',
+      Number(q.versi || pkg.versi || 1),
+      q.updatedAt || now,
+      q.quizId || pkg.quizId || ''
+    ]);
+    count++;
+  });
+
+  const opLog = pkg.operationLog || {
+    idOperasi: 'op-pkg-' + Date.now(),
+    jenisOperasi: 'Sinkronisasi BankSoal',
+    status: 'Sukses',
+    jumlahData: count,
+    waktuMulai: now,
+    waktuSelesai: new Date().toISOString(),
+    pesan: 'BankSoal disinkronkan (' + count + ' soal, quizId: ' + pkg.quizId + ')'
+  };
+  appendLogEntry(ss, opLog);
+
+  return jsonResponse({
+    success: true,
+    status: 'ok',
+    operationId: opLog.idOperasi,
+    quizId: pkg.quizId || '',
+    message: 'BankSoal berhasil disinkronkan (' + count + ' soal untuk paket ' + (pkg.title || pkg.quizId) + ')!',
+    count: count
+  });
+}
+
 function handleSaveSessionV4(payload) {
+  if (!payload || !payload.sessionId) {
+    return jsonResponse({ success: false, message: 'Payload sesi tidak valid.' });
+  }
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const siswaSheet = ss.getSheetByName(SHEETS.SISWA);
   const hasilSheet = ss.getSheetByName(SHEETS.HASIL);
-  const rekapSheet = ss.getSheetByName(SHEETS.REKAP);
+  const rekapSheet = ss.getSheetByName(SHEETS.REKAP_NILAI);
+  const now = new Date().toISOString();
 
-  // 1. Upsert Siswa berdasarkan studentId (kolom A = index 0)
   if (payload.siswa) {
     upsertByCompositeKey(siswaSheet, [0], [payload.siswa.studentId], [
       payload.siswa.studentId,
       payload.siswa.nama,
       payload.siswa.kelas,
       payload.siswa.status,
-      payload.siswa.updatedAt || new Date().toISOString()
+      payload.siswa.updatedAt || now
     ]);
   }
 
-  // 2. Upsert Hasil per resultId (kolom A = index 0) -> anti-duplikasi retry
   let hasilCount = 0;
   if (Array.isArray(payload.hasilRows)) {
+    if (payload.hasilRows.length > MAX_ROWS_PER_REQUEST) {
+      return jsonResponse({ success: false, message: 'Batas baris Hasil terlampaui.' });
+    }
     payload.hasilRows.forEach(row => {
       upsertByCompositeKey(hasilSheet, [0], [row.resultId], [
         row.resultId,
@@ -235,7 +420,6 @@ function handleSaveSessionV4(payload) {
     });
   }
 
-  // 3. Upsert Rekap berdasarkan sessionId (kolom A = index 0)
   if (payload.rekap) {
     const r = payload.rekap;
     upsertByCompositeKey(rekapSheet, [0], [r.sessionId], [
@@ -251,44 +435,24 @@ function handleSaveSessionV4(payload) {
       r.persentase,
       r.statusPengerjaan,
       r.pendingCount,
-      r.updatedAt || new Date().toISOString()
+      r.updatedAt || now
     ]);
   }
 
-  return jsonResponse({
-    success: true,
-    message: 'Data Siswa, Hasil (' + hasilCount + ' jawaban), dan Rekap tersinkronisasi tanpa duplikasi!',
-    sessionId: payload.sessionId
+  appendLogEntry(ss, {
+    idOperasi: 'op-ses-' + Date.now(),
+    jenisOperasi: 'Sinkronisasi RekapNilai',
+    status: 'Sukses',
+    jumlahData: hasilCount,
+    waktuMulai: now,
+    waktuSelesai: new Date().toISOString(),
+    pesan: 'Sesi ' + payload.sessionId + ' (' + hasilCount + ' jawaban)'
   });
-}
-
-function handleSyncPackage(pkg) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const bankSheet = ss.getSheetByName(SHEETS.BANK_SOAL);
-  const now = new Date().toISOString();
-  let count = 0;
-
-  if (Array.isArray(pkg.questions)) {
-    pkg.questions.forEach(q => {
-      upsertByCompositeKey(bankSheet, [0, 1], [q.quizId, q.questionId], [
-        q.quizId,
-        q.questionId,
-        q.nomorSoal,
-        q.jenisSoal,
-        q.teksPertanyaan,
-        q.pilihanJawaban,
-        q.kunciJawaban,
-        q.bobotNilai,
-        q.statusPublikasi,
-        now
-      ]);
-      count++;
-    });
-  }
 
   return jsonResponse({
     success: true,
-    message: 'BankSoal berhasil disinkronkan (' + count + ' soal untuk quizId ' + pkg.quizId + ')!'
+    message: 'Data Siswa, Hasil (' + hasilCount + ' jawaban), dan RekapNilai tersinkronisasi tanpa duplikasi!',
+    sessionId: payload.sessionId
   });
 }
 
@@ -337,25 +501,61 @@ function handleLegacySession(session) {
   });
 }
 
+function testSampleSync() {
+  setupSpreadsheet();
+  handleSyncPackage({
+    quizId: 'SAMPLE_TEST_QUIZ',
+    title: 'Uji Coba Koneksi',
+    versi: 1,
+    questions: [
+      {
+        quizId: 'SAMPLE_TEST_QUIZ',
+        questionId: 'SAMPLE_Q1',
+        nomorSoal: 1,
+        jenisSoal: 'multiple_choice',
+        teksPertanyaan: 'Contoh uji tulis BankSoal (boleh dihapus)',
+        opsiJson: JSON.stringify([{ id: 'A', text: 'Benar' }, { id: 'B', text: 'Salah' }]),
+        kunciJawaban: 'A',
+        pembahasan: 'Ini hanya data uji koneksi.',
+        gambarUrl: '',
+        statusPublikasi: 'UjiCoba',
+        versi: 1
+      }
+    ]
+  });
+}
+
+function clearTestSampleData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const bankSheet = ss.getSheetByName(SHEETS.BANK_SOAL);
+  if (!bankSheet || bankSheet.getLastRow() < 2) return;
+  const rows = bankSheet.getRange(2, 1, bankSheet.getLastRow() - 1, 1).getValues();
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (String(rows[i][0]) === 'SAMPLE_Q1') {
+      bankSheet.deleteRow(i + 2);
+    }
+  }
+}
+
 function jsonResponse(data) {
-  return ContentService.createTextOutput(JSON.stringify(data))
+  const normalized = Object.assign(
+    {
+      success: Boolean(data && data.success !== false),
+      status: data && data.success !== false ? 'ok' : 'error'
+    },
+    data || {}
+  );
+  return ContentService.createTextOutput(JSON.stringify(normalized))
     .setMimeType(ContentService.MimeType.JSON);
 }
 `;
 
-/**
- * Trigger backend-relayed Google Sheets synchronization for a student session.
- * Never returns fake success on failure.
- */
 export async function syncSessionToGoogleSheets(
   session: StudentSession
 ): Promise<SheetsApiResponse & { session?: StudentSession }> {
   return syncStudentSheetsApi(session.sessionId);
 }
 
-/**
- * Test connectivity with Google Apps Script Web App via backend server relay.
- */
 export async function testSheetsConnection(webAppUrl: string): Promise<SheetsApiResponse> {
   if (!webAppUrl || !webAppUrl.startsWith('https://script.google.com')) {
     return {

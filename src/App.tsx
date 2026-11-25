@@ -22,20 +22,29 @@ import {
   type ChestPlacementMeta,
   type Question,
   type QuestionPackage,
+  type SavedPlayerPose,
   type StudentAnswer,
   type StudentSession,
 } from './types/game';
 import { DEFAULT_GAME_CONFIG, type GameConfig } from './game/GameConfig';
 import type { RaycastDebugData } from './game/MapEnvironment';
 import { createInitialMiniMapState, type MiniMapLiveState } from './game/MiniMapTypes';
-import { saveStudentSession } from './services/storage';
+import {
+  clearActiveRecoveryState,
+  getActiveRecoveryState,
+  saveActiveRecoveryState,
+  saveStudentSession,
+  updateLocalRecoveryPose,
+} from './services/storage';
 import { sounds } from './services/audio';
 import {
   completeStudentSessionApi,
   connectRealtimeWs,
   fetchActiveQuiz,
+  getStudentSessionApi,
   startStudentSessionApi,
   submitStudentAnswerApi,
+  updateSessionProgressApi,
 } from './services/apiClient';
 
 export default function App() {
@@ -63,13 +72,39 @@ export default function App() {
   const [sceneReady, setSceneReady] = useState(false);
   const loadingStartedAtRef = useRef<number>(0);
 
-  // Active Student Game Session
+  // Active Student Game Session & Safe Refresh Recovery State
   const [currentSession, setCurrentSession] = useState<StudentSession | null>(null);
+  const [isRecoveringSession, setIsRecoveringSession] = useState<boolean>(() => {
+    const rec = getActiveRecoveryState();
+    return Boolean(rec && rec.activeGameplay);
+  });
+  const restoringSessionRef = useRef<StudentSession | null>(null);
+  const restorePoseRef = useRef<SavedPlayerPose | null>(null);
+  const latestPoseRef = useRef<SavedPlayerPose | null>(null);
+  const lastServerPoseSyncAtRef = useRef<number>(0);
+  const viewRef = useRef(view);
+  viewRef.current = view;
 
-  // Active Chest Question being answered + duration tracking
+  // Active Chest Question being answered + duration tracking + V10 Full Map & Coin VFX state
   const [activeQuestion, setActiveQuestion] = useState<Question | null>(null);
+  const [isFullMapOpen, setIsFullMapOpen] = useState(false);
+  const [coinRewardTrigger, setCoinRewardTrigger] = useState<{
+    questionId: string;
+    nonce: number;
+  } | null>(null);
   const chestOpenedAtRef = useRef<number>(Date.now());
   const miniMapStateRef = useRef<MiniMapLiveState>(createInitialMiniMapState());
+
+  const preloadImageAsset = useCallback(
+    (src: string) =>
+      new Promise<void>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error(`Gagal memuat aset gambar: ${src}`));
+        img.src = src;
+      }),
+    []
+  );
 
   // Virtual Controls for Touch Screens
   const [joystickVector, setJoystickVector] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -94,12 +129,116 @@ export default function App() {
     }
   }, []);
 
+  // Safe Refresh Recovery Check on Initial Mount
+  useEffect(() => {
+    const recovery = getActiveRecoveryState();
+    if (!recovery || !recovery.activeGameplay) {
+      setIsRecoveringSession(false);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const [sessionRes, quizRes] = await Promise.all([
+          getStudentSessionApi(recovery.sessionId),
+          fetchActiveQuiz(),
+        ]);
+        if (cancelled) return;
+
+        const session = sessionRes.session;
+        const activePkg = quizRes.activePackage;
+
+        const maxSessionAgeMs = 12 * 60 * 60 * 1000;
+        const lastUpdatedMs = Date.parse(session?.updatedAt || session?.startTime || '');
+        const isExpired = !Number.isFinite(lastUpdatedMs) || Date.now() - lastUpdatedMs > maxSessionAgeMs;
+        const sessionPkgVer = session?.packageVersion ?? 1;
+        const activePkgVer = activePkg?.version ?? 1;
+
+        const isValidToResume =
+          Boolean(sessionRes.success && session && !session.isCompleted) &&
+          Boolean(quizRes.success && activePkg) &&
+          session!.packageId === activePkg!.id &&
+          sessionPkgVer === activePkgVer &&
+          (!recovery.studentId || recovery.studentId === session!.student.studentId) &&
+          !isExpired;
+
+        if (!isValidToResume || !session || !activePkg) {
+          clearActiveRecoveryState();
+          setIsRecoveringSession(false);
+          return;
+        }
+
+        // Choose the fresher valid SavedPlayerPose between local cache and server record
+        const isFinitePose = (p?: SavedPlayerPose | null): p is SavedPlayerPose =>
+          Boolean(
+            p &&
+              Number.isFinite(p.x) &&
+              Number.isFinite(p.y) &&
+              Number.isFinite(p.z) &&
+              Number.isFinite(p.rotationY)
+          );
+
+        const localPose = isFinitePose(recovery.lastPosition) ? recovery.lastPosition : null;
+        const serverPose = isFinitePose(session.lastPosition) ? session.lastPosition : null;
+        let chosenPose: SavedPlayerPose | null = serverPose || localPose;
+        if (localPose && serverPose) {
+          const localTime = Date.parse(localPose.updatedAt || '');
+          const serverTime = Date.parse(serverPose.updatedAt || '');
+          chosenPose =
+            Number.isFinite(localTime) && (!Number.isFinite(serverTime) || localTime >= serverTime)
+              ? localPose
+              : serverPose;
+        }
+
+        restoringSessionRef.current = session;
+        restorePoseRef.current = chosenPose;
+        latestPoseRef.current = chosenPose;
+
+        setPendingStudent({ name: session.student.name, grade: session.student.grade });
+        setQuestionPackage(activePkg);
+        setCurrentSession(session);
+        saveStudentSession(session);
+        saveActiveRecoveryState({
+          sessionId: session.sessionId,
+          studentId: session.student.studentId || '',
+          studentName: session.student.name,
+          studentGrade: session.student.grade,
+          packageId: activePkg.id,
+          packageVersion: activePkg.version ?? 1,
+          activeGameplay: true,
+          lastPosition: chosenPose || undefined,
+          savedAt: new Date().toISOString(),
+        });
+
+        setSceneReady(false);
+        setAssetsPreloaded(false);
+        setLoadingError('');
+        setLoadingProgress(35);
+        setLoadingStatus('Memulihkan progres & posisi petualanganmu...');
+        loadingStartedAtRef.current = Date.now();
+        setLoadingAttempt((prev) => prev + 1);
+        setIsRecoveringSession(false);
+        setView('loading');
+      } catch {
+        if (!cancelled) {
+          clearActiveRecoveryState();
+          setIsRecoveringSession(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Load active quiz initially & whenever entering cover/login
   useEffect(() => {
-    if (view === 'cover' || view === 'login') {
+    if (!isRecoveringSession && (view === 'cover' || view === 'login')) {
       void loadActivePackageFromServer();
     }
-  }, [view, loadActivePackageFromServer]);
+  }, [view, isRecoveringSession, loadActivePackageFromServer]);
 
   // Pirate Soundtrack Lifecycle: plays continuously during 'game' (even when QuestionPanel/PauseMenu opens)
   // and fades out smoothly when leaving gameplay to cover, login, result, or teacher portal.
@@ -115,8 +254,11 @@ export default function App() {
   useEffect(() => {
     const disconnect = connectRealtimeWs((evt) => {
       if (evt.type === 'quiz:published') {
-        setQuestionPackage(evt.payload);
-        setQuizLoadError('');
+        // Never tear down an active student's 3D world mid-run; apply live outside gameplay
+        if (viewRef.current !== 'game' && viewRef.current !== 'loading') {
+          setQuestionPackage(evt.payload);
+          setQuizLoadError('');
+        }
       } else if (evt.type === 'session:updated') {
         setCurrentSession((prev) =>
           prev && prev.sessionId === evt.payload.sessionId ? evt.payload : prev
@@ -139,6 +281,46 @@ export default function App() {
     return disconnect;
   }, []);
 
+  // Flush final character pose on pagehide / tab hide during active gameplay
+  useEffect(() => {
+    if (view !== 'game' || !currentSession || currentSession.isCompleted) return;
+    const sid = currentSession.sessionId;
+    const flushPose = () => {
+      const pose = latestPoseRef.current;
+      if (!pose) return;
+      updateLocalRecoveryPose(sid, pose);
+      void updateSessionProgressApi(sid, pose, { keepalive: true });
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        flushPose();
+      }
+    };
+    window.addEventListener('pagehide', flushPose);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flushPose);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [view, currentSession?.sessionId, currentSession?.isCompleted]);
+
+  const handlePlayerPoseChange = useCallback(
+    (pose: SavedPlayerPose, immediateSync = false) => {
+      latestPoseRef.current = pose;
+      const sid = currentSession?.sessionId;
+      if (!sid || currentSession?.isCompleted) return;
+
+      updateLocalRecoveryPose(sid, pose);
+
+      const now = Date.now();
+      if (immediateSync || now - lastServerPoseSyncAtRef.current >= 4000) {
+        lastServerPoseSyncAtRef.current = now;
+        void updateSessionProgressApi(sid, pose, { keepalive: immediateSync });
+      }
+    },
+    [currentSession?.sessionId, currentSession?.isCompleted]
+  );
+
   // Transition from Biodata -> Loading Screen (validating biodata and guarding double-submit)
   const handleStartGame = (studentName: string, grade: string) => {
     if (isStartingSession || view === 'loading') return;
@@ -150,10 +332,18 @@ export default function App() {
     }
 
     sounds.unlockAudio();
+    clearActiveRecoveryState();
+    restoringSessionRef.current = null;
+    restorePoseRef.current = null;
+    latestPoseRef.current = null;
+    lastServerPoseSyncAtRef.current = 0;
+
     miniMapStateRef.current.ready = false;
     setPendingStudent({ name: trimmedName, grade: validGrade });
     setCurrentSession(null);
     setActiveQuestion(null);
+    setIsFullMapOpen(false);
+    setCoinRewardTrigger(null);
     setIsPaused(false);
     setSceneReady(false);
     setAssetsPreloaded(false);
@@ -165,15 +355,13 @@ export default function App() {
     setView('loading');
   };
 
-  // Real Loading Orchestration: Session API + Panel Image Preload -> Mount 3D Scene
+  // Real Loading Orchestration: Session API (or Resumed Session) + Panel Image Preload -> Mount 3D Scene
   useEffect(() => {
     if (view !== 'loading' || !pendingStudent) return;
 
     let cancelled = false;
     setIsStartingSession(true);
     setLoadingError('');
-    setLoadingProgress(18);
-    setLoadingStatus('Menyiapkan sesi siswa & bank soal...');
 
     const timeoutId = window.setTimeout(() => {
       if (!cancelled) {
@@ -182,50 +370,75 @@ export default function App() {
       }
     }, 35000);
 
-    const preloadImage = (src: string) =>
-      new Promise<void>((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve();
-        img.onerror = () => reject(new Error(`Gagal memuat aset gambar: ${src}`));
-        img.src = src;
-      });
+    const resumedSession = restoringSessionRef.current;
 
-    (async () => {
-      try {
-        const [sessionRes] = await Promise.all([
-          startStudentSessionApi(pendingStudent.name, pendingStudent.grade),
-          preloadImage(QUESTION_PANEL_ASSET),
-        ]);
-
-        if (cancelled) return;
-
-        if (!sessionRes.success || !sessionRes.session || !sessionRes.activePackage) {
-          setIsStartingSession(false);
-          setLoadingError(
-            sessionRes.message || 'Belum ada paket soal aktif yang diterbitkan oleh guru.'
-          );
-          return;
+    if (resumedSession && questionPackage) {
+      setLoadingProgress(35);
+      setLoadingStatus('Memulihkan pulau 3D & posisi petualanganmu...');
+      (async () => {
+        try {
+          await preloadImageAsset(QUESTION_PANEL_ASSET);
+          if (cancelled) return;
+          setAssetsPreloaded(true);
+          setLoadingProgress(70);
+          setLoadingStatus('Memuat pulau 3D & karakter petualang...');
+        } catch {
+          if (!cancelled) {
+            setIsStartingSession(false);
+            setLoadingError('Gagal memuat aset antarmuka permainan.');
+          }
         }
+      })();
+    } else {
+      setLoadingProgress(18);
+      setLoadingStatus('Menyiapkan sesi siswa & bank soal...');
+      (async () => {
+        try {
+          const [sessionRes] = await Promise.all([
+            startStudentSessionApi(pendingStudent.name, pendingStudent.grade),
+            preloadImageAsset(QUESTION_PANEL_ASSET),
+          ]);
 
-        setQuestionPackage(sessionRes.activePackage);
-        setCurrentSession(sessionRes.session);
-        saveStudentSession(sessionRes.session);
-        setAssetsPreloaded(true);
-        setLoadingProgress(65);
-        setLoadingStatus('Memuat pulau 3D & karakter petualang...');
-      } catch {
-        if (!cancelled) {
-          setIsStartingSession(false);
-          setLoadingError('Gagal terhubung ke server untuk memulai sesi petualangan.');
+          if (cancelled) return;
+
+          if (!sessionRes.success || !sessionRes.session || !sessionRes.activePackage) {
+            setIsStartingSession(false);
+            setLoadingError(
+              sessionRes.message || 'Belum ada paket soal aktif yang diterbitkan oleh guru.'
+            );
+            return;
+          }
+
+          setQuestionPackage(sessionRes.activePackage);
+          setCurrentSession(sessionRes.session);
+          saveStudentSession(sessionRes.session);
+          saveActiveRecoveryState({
+            sessionId: sessionRes.session.sessionId,
+            studentId: sessionRes.session.student.studentId || '',
+            studentName: sessionRes.session.student.name,
+            studentGrade: sessionRes.session.student.grade,
+            packageId: sessionRes.activePackage.id,
+            packageVersion: sessionRes.activePackage.version ?? 1,
+            activeGameplay: true,
+            savedAt: new Date().toISOString(),
+          });
+          setAssetsPreloaded(true);
+          setLoadingProgress(65);
+          setLoadingStatus('Memuat pulau 3D & karakter petualang...');
+        } catch {
+          if (!cancelled) {
+            setIsStartingSession(false);
+            setLoadingError('Gagal terhubung ke server untuk memulai sesi petualangan.');
+          }
         }
-      }
-    })();
+      })();
+    }
 
     return () => {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [view, loadingAttempt, pendingStudent]);
+  }, [view, loadingAttempt, pendingStudent, preloadImageAsset]);
 
   // Complete transition to 'game' ONLY when BOTH backend/assets AND Three.js 3D scene are ready
   useEffect(() => {
@@ -240,6 +453,7 @@ export default function App() {
 
     const timer = window.setTimeout(() => {
       setIsStartingSession(false);
+      restoringSessionRef.current = null;
       setView('game');
     }, waitMs);
 
@@ -248,10 +462,13 @@ export default function App() {
 
   const handleRetryLoading = () => {
     if (!pendingStudent) {
+      clearActiveRecoveryState();
       setView('login');
       return;
     }
-    setCurrentSession(null);
+    if (!restoringSessionRef.current) {
+      setCurrentSession(null);
+    }
     setSceneReady(false);
     setAssetsPreloaded(false);
     setLoadingError('');
@@ -266,6 +483,7 @@ export default function App() {
     if (!questionPackage) return;
     const q = questionPackage.questions.find((item) => item.id === questionId);
     if (q) {
+      setIsFullMapOpen(false);
       chestOpenedAtRef.current = Date.now();
       setActiveQuestion(q);
     }
@@ -306,6 +524,12 @@ export default function App() {
       if (res.success && res.session && res.answer) {
         setCurrentSession(res.session);
         saveStudentSession(res.session);
+        if (res.answer.isCorrect === true) {
+          setCoinRewardTrigger((prev) => ({
+            questionId: ans.questionId,
+            nonce: (prev?.nonce ?? 0) + 1,
+          }));
+        }
         return {
           success: true,
           answer: res.answer,
@@ -328,11 +552,16 @@ export default function App() {
   // Complete mission via backend API (triggers final grading & Google Sheets sync)
   const handleFinishQuest = async () => {
     if (!currentSession) return;
+    setIsFullMapOpen(false);
+    clearActiveRecoveryState();
+    restorePoseRef.current = null;
+    latestPoseRef.current = null;
     try {
       const res = await completeStudentSessionApi(currentSession.sessionId);
       if (res.success && res.session) {
         setCurrentSession(res.session);
         saveStudentSession(res.session);
+        clearActiveRecoveryState();
       }
     } catch {
       const fallbackCompleted: StudentSession = {
@@ -342,6 +571,7 @@ export default function App() {
       };
       setCurrentSession(fallbackCompleted);
       saveStudentSession(fallbackCompleted);
+      clearActiveRecoveryState();
     }
     setView('result');
   };
@@ -357,8 +587,27 @@ export default function App() {
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-slate-950 font-sans">
+      {/* INITIAL REFRESH RECOVERY CHECK OVERLAY */}
+      {isRecoveringSession && (
+        <LoadingScreen
+          studentName={getActiveRecoveryState()?.studentName || 'Petualang'}
+          studentGrade={getActiveRecoveryState()?.studentGrade || 'Kelas V'}
+          progressPercent={22}
+          statusMessage="Memeriksa & memulihkan progres sesi aktif..."
+          onRetry={() => {
+            clearActiveRecoveryState();
+            setIsRecoveringSession(false);
+          }}
+          onBackToLogin={() => {
+            clearActiveRecoveryState();
+            setIsRecoveringSession(false);
+            setView('login');
+          }}
+        />
+      )}
+
       {/* 0. COVER SCREEN VIEW */}
-      {view === 'cover' && (
+      {!isRecoveringSession && view === 'cover' && (
         <CoverScreen
           onStart={() => setView('login')}
           onOpenTeacherDashboard={() => setView('teacher')}
@@ -392,7 +641,7 @@ export default function App() {
             onFinishQuest={() => void handleFinishQuest()}
             onSceneReady={handleSceneReady}
             onSceneError={handleSceneError}
-            isPaused={view === 'loading' || isPaused || !!activeQuestion}
+            isPaused={view === 'loading' || isPaused || !!activeQuestion || isFullMapOpen}
             gameConfig={gameConfig}
             onUpdateDebugData={setDebugData}
             onUpdateChestPlacements={setChestPlacements}
@@ -400,6 +649,10 @@ export default function App() {
             virtualJoystickVector={joystickVector}
             virtualInteractTrigger={interactTrigger}
             virtualJumpTrigger={jumpTrigger}
+            activeQuestionId={activeQuestion?.id ?? null}
+            coinRewardTrigger={coinRewardTrigger}
+            initialRestorePose={restorePoseRef.current}
+            onPlayerPoseChange={handlePlayerPoseChange}
           />
 
           {/* Clean HUD Overlay (visible once loading finishes) */}
@@ -414,7 +667,16 @@ export default function App() {
               debugData={debugData}
               chestPlacements={chestPlacements}
               miniMapStateRef={miniMapStateRef}
-              onPause={() => setIsPaused(true)}
+              isFullMapOpen={isFullMapOpen}
+              onOpenFullMap={() => {
+                sounds.playClick();
+                setIsFullMapOpen(true);
+              }}
+              onCloseFullMap={() => setIsFullMapOpen(false)}
+              onPause={() => {
+                setIsFullMapOpen(false);
+                setIsPaused(true);
+              }}
               onFinishQuest={() => void handleFinishQuest()}
               onOpenInstructions={() => setShowInstructions(true)}
               onVirtualJoystickMove={(v) => setJoystickVector(v)}
@@ -429,7 +691,9 @@ export default function App() {
               key={activeQuestion.id}
               question={activeQuestion}
               existingAnswer={currentSession.answers[activeQuestion.id]}
-              totalQuestions={questionPackage.questions.length}
+              totalQuestions={
+                questionPackage.questions.filter((q) => q.isActive !== false).length
+              }
               completedCount={currentSession.chestsCompleted.length}
               showInstantFeedback={questionPackage.showInstantFeedback}
               onSaveAnswer={handleSaveAnswer}
@@ -448,11 +712,16 @@ export default function App() {
               onRestart={() => {
                 if (currentSession) {
                   setIsPaused(false);
+                  clearActiveRecoveryState();
                   handleStartGame(currentSession.student.name, currentSession.student.grade);
                 }
               }}
               onExitToMenu={() => {
                 setIsPaused(false);
+                clearActiveRecoveryState();
+                restorePoseRef.current = null;
+                latestPoseRef.current = null;
+                setCurrentSession(null);
                 setView('cover');
               }}
               onOpenInstructions={() => setShowInstructions(true)}
@@ -473,6 +742,9 @@ export default function App() {
           onBackToLogin={() => {
             setIsStartingSession(false);
             setLoadingError('');
+            clearActiveRecoveryState();
+            restoringSessionRef.current = null;
+            restorePoseRef.current = null;
             setView('login');
           }}
         />
@@ -486,11 +758,16 @@ export default function App() {
           onSessionUpdated={(updated) => {
             setCurrentSession(updated);
             saveStudentSession(updated);
+            clearActiveRecoveryState();
           }}
           onPlayAgain={() => {
+            clearActiveRecoveryState();
             handleStartGame(currentSession.student.name, currentSession.student.grade);
           }}
-          onExitToMenu={() => setView('cover')}
+          onExitToMenu={() => {
+            clearActiveRecoveryState();
+            setView('cover');
+          }}
         />
       )}
 

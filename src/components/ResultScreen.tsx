@@ -95,8 +95,8 @@ export const ResultScreen: React.FC<ResultScreenProps> = ({
       <div className="max-w-4xl mx-auto space-y-6">
         {/* Celebration Header */}
         <div className="text-center pt-4">
-          <div className="inline-flex p-3 rounded-full bg-amber-500/20 border-2 border-amber-400 text-amber-400 mb-3 animate-bounce">
-            <Award className="w-12 h-12" />
+          <div className="inline-flex p-3 rounded-2xl bg-amber-500/15 border border-amber-400/70 text-amber-400 mb-3 shadow-lg">
+            <Award className="w-11 h-11" />
           </div>
           <h1 className="text-3xl sm:text-4xl font-extrabold font-pirate text-amber-400 tracking-wider">
             MISI SELESAI, PETUALANG HEBAT!
@@ -108,7 +108,7 @@ export const ResultScreen: React.FC<ResultScreenProps> = ({
 
         {/* Score Summary Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-          <div className="bg-slate-900/90 border border-amber-600/50 p-4 rounded-2xl text-center shadow-lg">
+          <div className="bg-[#0f192b] border border-amber-500/35 p-4 rounded-xl text-center shadow-lg">
             <span className="text-xs text-amber-300 font-bold uppercase block mb-1">Skor Diperoleh</span>
             <div className="text-2xl sm:text-3xl font-extrabold text-amber-400 flex items-center justify-center gap-1 tabular-nums">
               <Coins className="w-6 h-6 fill-current" />
@@ -119,8 +119,8 @@ export const ResultScreen: React.FC<ResultScreenProps> = ({
             </span>
           </div>
 
-          <div className="bg-slate-900/90 border border-emerald-600/50 p-4 rounded-2xl text-center shadow-lg">
-            <span className="text-xs text-emerald-300 font-bold uppercase block mb-1">Nilai Sementara</span>
+          <div className="bg-[#0f192b] border border-amber-500/35 p-4 rounded-xl text-center shadow-lg">
+            <span className="text-xs text-amber-200/80 font-bold uppercase block mb-1">Nilai Sementara</span>
             <div className="text-2xl sm:text-3xl font-extrabold text-emerald-400 tabular-nums">
               {session.percentageScore}%
             </div>
@@ -135,8 +135,8 @@ export const ResultScreen: React.FC<ResultScreenProps> = ({
             </span>
           </div>
 
-          <div className="bg-slate-900/90 border border-sky-600/50 p-4 rounded-2xl text-center shadow-lg">
-            <span className="text-xs text-sky-300 font-bold uppercase block mb-1">Peti Terbuka</span>
+          <div className="bg-[#0f192b] border border-amber-500/35 p-4 rounded-xl text-center shadow-lg">
+            <span className="text-xs text-amber-200/80 font-bold uppercase block mb-1">Peti Terbuka</span>
             <div className="text-2xl sm:text-3xl font-extrabold text-sky-400 tabular-nums">
               {session.chestsCompleted.length}/{questionPackage.questions.length}
             </div>
@@ -146,8 +146,8 @@ export const ResultScreen: React.FC<ResultScreenProps> = ({
             </span>
           </div>
 
-          <div className="bg-slate-900/90 border border-purple-600/50 p-4 rounded-2xl text-center shadow-lg">
-            <span className="text-xs text-purple-300 font-bold uppercase block mb-1">Status Sheets</span>
+          <div className="bg-[#0f192b] border border-amber-500/35 p-4 rounded-xl text-center shadow-lg">
+            <span className="text-xs text-amber-200/80 font-bold uppercase block mb-1">Status Sheets</span>
             <div className="text-xs font-bold mt-2 flex items-center justify-center gap-1">
               {syncStatus === 'synced' ? (
                 <span className="text-emerald-400 flex items-center gap-1">

@@ -46,15 +46,13 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({
       />
 
       {/* Measured atmospheric dark scrim for crisp readability */}
-      <div className="absolute inset-0 bg-gradient-to-b from-slate-950/80 via-slate-950/75 to-slate-950/90 backdrop-blur-sm pointer-events-none" />
+      <div className="absolute inset-0 bg-slate-950/80 pointer-events-none" />
 
       {/* Centered Clean Pirate Loading Panel */}
-      <div className="relative z-10 w-full max-w-md bg-slate-950/80 border border-amber-500/40 rounded-3xl p-6 sm:p-8 shadow-2xl shadow-black/80 backdrop-blur-md text-center space-y-5">
+      <div className="relative z-10 w-full max-w-md bg-[#0b1422]/92 border border-amber-500/45 rounded-2xl p-6 sm:p-8 shadow-2xl text-center space-y-5">
         {/* Pirate Compass Emblem */}
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-amber-600 via-amber-500 to-amber-300 p-0.5 mx-auto shadow-xl border border-amber-200/80">
-          <div className="w-full h-full rounded-2xl bg-slate-950 flex items-center justify-center">
-            <Compass className={`w-8 h-8 text-amber-400 ${error ? '' : 'animate-spin'}`} />
-          </div>
+        <div className="w-14 h-14 rounded-xl bg-[#132036] border-2 border-amber-400/70 mx-auto shadow-lg flex items-center justify-center">
+          <Compass className={`w-7 h-7 text-amber-400 ${error ? '' : 'animate-spin'}`} />
         </div>
 
         {/* Minimal Student Metadata (unboxed typography with dot separator) */}
@@ -73,7 +71,7 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({
         {error ? (
           <div className="space-y-4">
             <div
-              className="p-4 rounded-2xl bg-red-950/85 border border-red-500/70 text-red-200 text-xs sm:text-sm leading-relaxed flex flex-col items-center gap-2"
+              className="p-4 rounded-xl bg-red-950/85 border border-red-500/70 text-red-200 text-xs sm:text-sm leading-relaxed flex flex-col items-center gap-2"
               role="alert"
             >
               <AlertTriangle className="w-6 h-6 text-red-400 shrink-0" />
@@ -93,7 +91,7 @@ export const LoadingScreen: React.FC<LoadingScreenProps> = ({
               <button
                 type="button"
                 onClick={onRetry}
-                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-amber-950 font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-lg transition-colors"
+                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-lg transition-colors"
               >
                 <RefreshCw className="w-4 h-4" />
                 <span>Coba Lagi</span>

@@ -11,6 +11,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { GameConfig } from './GameConfig';
 import { ChestCollisionVolume, MapEnvironment } from './MapEnvironment';
 
+THREE.Cache.enabled = true;
+
 export interface CharacterDiagnostics {
   status: 'loading' | 'loaded' | 'error';
   path: string;
@@ -50,6 +52,7 @@ export class CharacterController {
   private mixer: THREE.AnimationMixer | null = null;
   private actionClip: THREE.AnimationAction | null = null;
   private loadedModel: THREE.Object3D | null = null;
+  private contactShadowMesh: THREE.Mesh | null = null;
 
   constructor(config: GameConfig, mapEnv: MapEnvironment) {
     this.config = config;
@@ -111,16 +114,15 @@ export class CharacterController {
     onSuccess?: () => void,
     onError?: (err: Error) => void
   ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const loader = new GLTFLoader();
+    const loader = new GLTFLoader();
+    const encodedPath = encodeURI(this.config.characterGlbPath);
 
-      // Safely encode filename with spaces (e.g. /assets/models/karakter%20edgar.glb)
-      const encodedPath = encodeURI(this.config.characterGlbPath);
-
+    return new Promise<void>((resolve, reject) => {
       loader.load(
         encodedPath,
         (gltf) => {
           this.loadedModel = gltf.scene;
+          this.loadedModel.updateMatrixWorld(true);
 
           // 1. Analyze raw character bounding box
           const rawBox = new THREE.Box3().setFromObject(this.loadedModel);
@@ -180,6 +182,7 @@ export class CharacterController {
           const contactShadow = new THREE.Mesh(shadowGeo, shadowMat);
           contactShadow.rotation.x = -Math.PI / 2;
           contactShadow.position.y = 0.02;
+          this.contactShadowMesh = contactShadow;
           this.visualGroup.add(contactShadow);
 
           this.diagnostics.status = 'loaded';
@@ -190,11 +193,12 @@ export class CharacterController {
         },
         undefined,
         (err) => {
-          console.error('Error loading character GLB:', err);
+          const errorObj = err instanceof Error ? err : new Error(String(err));
+          console.error('Error loading character GLB:', errorObj);
           this.diagnostics.status = 'error';
-          this.diagnostics.message = `Gagal memuat karakter (${this.config.characterGlbPath}): ${(err as Error).message}`;
-          if (onError) onError(err as Error);
-          reject(err);
+          this.diagnostics.message = `Gagal memuat karakter (${this.config.characterGlbPath}): ${errorObj.message}`;
+          if (onError) onError(errorObj);
+          reject(errorObj);
         }
       );
     });
@@ -349,6 +353,23 @@ export class CharacterController {
   }
 
   /**
+   * Apply a validated saved pose when resuming an active student session after refresh.
+   */
+  public applyRestoredPose(pos: { x: number; y: number; z: number }, rotationY?: number) {
+    this.group.position.set(pos.x, pos.y, pos.z);
+    this.velocity.set(0, 0, 0);
+    this.verticalVelocity = 0;
+    this.currentSpeed = 0;
+    this.isGrounded = true;
+    this.isMoving = false;
+    if (typeof rotationY === 'number' && Number.isFinite(rotationY)) {
+      this.currentRotationY = rotationY;
+      this.targetRotationY = rotationY;
+      this.visualGroup.rotation.y = rotationY;
+    }
+  }
+
+  /**
    * Respawn character at safe starting coordinates
    */
   public respawn() {
@@ -360,5 +381,22 @@ export class CharacterController {
     this.velocity.set(0, 0, 0);
     this.verticalVelocity = 0;
     this.isGrounded = true;
+  }
+
+  public dispose() {
+    if (this.mixer) {
+      this.mixer.stopAllAction();
+      if (this.loadedModel) {
+        this.mixer.uncacheRoot(this.loadedModel);
+      }
+      this.mixer = null;
+    }
+    this.debugCapsuleMesh.geometry.dispose();
+    (this.debugCapsuleMesh.material as THREE.Material).dispose();
+    if (this.contactShadowMesh) {
+      this.contactShadowMesh.geometry.dispose();
+      (this.contactShadowMesh.material as THREE.Material).dispose();
+      this.contactShadowMesh = null;
+    }
   }
 }

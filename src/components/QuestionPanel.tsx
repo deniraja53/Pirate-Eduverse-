@@ -15,7 +15,16 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import confetti from 'canvas-confetti';
-import { Question, StudentAnswer, StudentSession } from '../types/game';
+import {
+  getQuestionTypeLabel,
+  Question,
+  StudentAnswer,
+  StudentSession,
+} from '../types/game';
+import {
+  getShortAnswerAcceptedList,
+  normalizeTrueFalseValue,
+} from '../teacher/questionValidation';
 import { sounds } from '../services/audio';
 import {
   CheckCircle2,
@@ -27,6 +36,8 @@ import {
   Clock,
   ArrowRight,
   BookOpen,
+  CheckSquare,
+  Square,
 } from 'lucide-react';
 
 export const QUESTION_PANEL_ASSET = '/assets/aistudio/Desain_tanpa_judul__6__dff919a6.png';
@@ -139,6 +150,42 @@ function resolveVerifiedExplanation(
   return question.explanation?.trim() || question.essayRubric?.trim() || null;
 }
 
+const QuestionImageBanner: React.FC<{ imageUrl: string; imageAlt?: string }> = ({
+  imageUrl,
+  imageAlt,
+}) => {
+  const [imgFailed, setImgFailed] = useState(false);
+
+  useEffect(() => {
+    setImgFailed(false);
+  }, [imageUrl]);
+
+  if (imgFailed) {
+    return (
+      <div className="px-3 py-2 rounded-xl border border-amber-700/40 bg-[#fff3d6]/80 text-[#78350f] text-[11px] font-bold flex items-center gap-2">
+        <AlertCircle className="w-4 h-4 shrink-0" />
+        <span>Gambar soal tidak dapat dimuat ({imageAlt || 'ilustrasi soal'}).</span>
+      </div>
+    );
+  }
+
+  return (
+    <figure className="rounded-xl border-2 border-[#a16207]/45 bg-[#fffaf0]/85 p-1.5 inline-block max-w-full shadow-xs">
+      <img
+        src={imageUrl}
+        alt={imageAlt || 'Ilustrasi pertanyaan'}
+        onError={() => setImgFailed(true)}
+        className="max-h-[17cqw] w-auto max-w-full object-contain rounded-lg mx-auto"
+      />
+      {imageAlt && (
+        <figcaption className="text-[10px] text-[#6b3b14] font-semibold text-center mt-1 px-1">
+          {imageAlt}
+        </figcaption>
+      )}
+    </figure>
+  );
+};
+
 export const QuestionPanel: React.FC<QuestionPanelProps> = ({
   question,
   existingAnswer,
@@ -153,6 +200,25 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({
   );
   const [wasInitiallyCompleted] = useState<boolean>(() => Boolean(existingAnswer));
   const [selectedOption, setSelectedOption] = useState<string>(existingAnswer?.answerText || '');
+  const [selectedOptionsMulti, setSelectedOptionsMulti] = useState<string[]>(() => {
+    if (!existingAnswer?.answerText || question.type !== 'multiple_choice_complex') return [];
+    return existingAnswer.answerText
+      .split(/[\s,;\/&+]+/)
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => /^[A-Z]$/.test(s));
+  });
+  const [matchingSelections, setMatchingSelections] = useState<Record<string, string>>(() => {
+    if (!existingAnswer?.answerText || question.type !== 'matching') return {};
+    try {
+      const parsed = JSON.parse(existingAnswer.answerText);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, string>;
+      }
+    } catch {
+      // ignore
+    }
+    return {};
+  });
   const [textAnswer, setTextAnswer] = useState<string>(existingAnswer?.answerText || '');
   const [submittedAnswer, setSubmittedAnswer] = useState<StudentAnswer | undefined>(
     existingAnswer
@@ -160,14 +226,54 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({
   const [errorMessage, setErrorMessage] = useState<string>('');
   const feedbackRef = useRef<HTMLDivElement>(null);
 
+  // Deterministically shuffle right-hand choices for matching questions
+  const shuffledMatchingChoices = useMemo(() => {
+    const pairs = Array.isArray(question.matchingPairs) ? question.matchingPairs : [];
+    const rights = pairs.map((p) => p.right).filter(Boolean);
+    if (rights.length <= 1) return rights;
+    const copy = [...rights];
+    let seed = 0;
+    for (let i = 0; i < question.id.length; i++) {
+      seed = (seed * 31 + question.id.charCodeAt(i)) >>> 0;
+    }
+    for (let i = copy.length - 1; i > 0; i--) {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      const j = seed % (i + 1);
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+  }, [question.id, question.matchingPairs]);
+
   // Sync local state when active question changes while mounted
   useEffect(() => {
     setPhase(existingAnswer ? 'feedback' : 'question');
     setSelectedOption(existingAnswer?.answerText || '');
+    setSelectedOptionsMulti(
+      existingAnswer?.answerText && question.type === 'multiple_choice_complex'
+        ? existingAnswer.answerText
+            .split(/[\s,;\/&+]+/)
+            .map((s) => s.trim().toUpperCase())
+            .filter((s) => /^[A-Z]$/.test(s))
+        : []
+    );
+    if (existingAnswer?.answerText && question.type === 'matching') {
+      try {
+        const parsed = JSON.parse(existingAnswer.answerText);
+        setMatchingSelections(
+          parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? (parsed as Record<string, string>)
+            : {}
+        );
+      } catch {
+        setMatchingSelections({});
+      }
+    } else {
+      setMatchingSelections({});
+    }
     setTextAnswer(existingAnswer?.answerText || '');
     setSubmittedAnswer(existingAnswer);
     setErrorMessage('');
-  }, [question.id]);
+  }, [question.id, existingAnswer, question.type]);
 
   // Smoothly scroll feedback + explanation into view once submitted
   useEffect(() => {
@@ -232,6 +338,49 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({
           selectedOption.trim().toUpperCase() === question.correctAnswer.trim().toUpperCase();
         localScore = localIsCorrect ? question.points : 0;
       }
+    } else if (question.type === 'multiple_choice_complex') {
+      const sorted = Array.from(new Set(selectedOptionsMulti)).sort();
+      if (sorted.length === 0) {
+        setErrorMessage('Silakan centang minimal satu pilihan jawaban sebelum mengirim!');
+        return;
+      }
+      finalAnswer = sorted.join(', ');
+      const keys = Array.isArray(question.correctAnswers)
+        ? Array.from(new Set(question.correctAnswers.map((k) => k.trim().toUpperCase()))).sort()
+        : [];
+      if (keys.length > 0) {
+        localIsCorrect =
+          sorted.length === keys.length && keys.every((k, idx) => sorted[idx] === k);
+        localScore = localIsCorrect ? question.points : 0;
+      }
+    } else if (question.type === 'true_false') {
+      const chosenBool = normalizeTrueFalseValue(selectedOption);
+      if (chosenBool === null) {
+        setErrorMessage('Silakan pilih BENAR atau SALAH terlebih dahulu!');
+        return;
+      }
+      finalAnswer = chosenBool ? 'Benar' : 'Salah';
+      const keyBool =
+        typeof question.correctBoolean === 'boolean'
+          ? question.correctBoolean
+          : normalizeTrueFalseValue(question.correctAnswer);
+      if (keyBool !== null) {
+        localIsCorrect = chosenBool === keyBool;
+        localScore = localIsCorrect ? question.points : 0;
+      }
+    } else if (question.type === 'matching') {
+      const pairs = Array.isArray(question.matchingPairs) ? question.matchingPairs : [];
+      if (pairs.some((p) => !matchingSelections[p.id])) {
+        setErrorMessage('Lengkapi seluruh pasangan menjodohkan terlebih dahulu sebelum mengirim!');
+        return;
+      }
+      finalAnswer = JSON.stringify(matchingSelections);
+      localIsCorrect = pairs.every(
+        (p) =>
+          (matchingSelections[p.id] || '').trim().toLowerCase() ===
+          p.right.trim().toLowerCase()
+      );
+      localScore = localIsCorrect ? question.points : 0;
     } else if (question.type === 'short_answer') {
       const trimmed = textAnswer.trim();
       if (!trimmed) {
@@ -239,10 +388,11 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({
         return;
       }
       finalAnswer = trimmed;
-      if (question.keywords && question.keywords.length > 0) {
-        const lower = trimmed.toLowerCase();
-        localIsCorrect = question.keywords.some(
-          (kw) => kw.trim() && lower.includes(kw.trim().toLowerCase())
+      const accepted = getShortAnswerAcceptedList(question);
+      if (accepted.length > 0) {
+        const normStudent = trimmed.replace(/\s+/g, ' ').toLowerCase();
+        localIsCorrect = accepted.some(
+          (ans) => ans.trim().replace(/\s+/g, ' ').toLowerCase() === normStudent
         );
         localScore = localIsCorrect ? question.points : 0;
       }
@@ -298,18 +448,7 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({
     }
   };
 
-  const getTypeLabel = (type: string) => {
-    switch (type) {
-      case 'multiple_choice':
-        return 'Pilihan Ganda';
-      case 'short_answer':
-        return 'Isian Singkat';
-      case 'essay':
-        return 'Pertanyaan Esai';
-      default:
-        return 'Soal Peti';
-    }
-  };
+  const getTypeLabel = (type: string) => getQuestionTypeLabel(type);
 
   const formattedNumber = String(question.number).padStart(2, '0');
   const activeResult = submittedAnswer;
@@ -464,6 +603,13 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({
               </div>
             )}
 
+            {/* Gambar Soal (Sebelum Pertanyaan) */}
+            {question.imageUrl && question.imagePosition === 'before' && (
+              <div className="shrink-0 pr-[11%]">
+                <QuestionImageBanner imageUrl={question.imageUrl} imageAlt={question.imageAlt} />
+              </div>
+            )}
+
             {/* Teks Pertanyaan Langsung di Atas Perkamen (Ghost container = nol layout shift) */}
             <div
               className="relative shrink-0 pr-[10%] cursor-pointer"
@@ -494,6 +640,13 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({
                 )}
               </p>
             </div>
+
+            {/* Gambar Soal (Sesudah Pertanyaan / Default) */}
+            {question.imageUrl && question.imagePosition !== 'before' && (
+              <div className="shrink-0 pr-[11%]">
+                <QuestionImageBanner imageUrl={question.imageUrl} imageAlt={question.imageAlt} />
+              </div>
+            )}
 
             {/* AREA C PROTECTION — Opsi, Jawaban & Feedback diberi pr-[11%] */}
             <div className="pr-[11%] space-y-[1.05cqw] pb-1">
@@ -565,6 +718,198 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({
                           {opt.text}
                         </span>
                       </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* 1b. Pilihan Ganda Kompleks (Multi-Select Checkbox) */}
+              {question.type === 'multiple_choice_complex' && (() => {
+                const keySet = new Set(
+                  (Array.isArray(question.correctAnswers) ? question.correctAnswers : []).map((k) =>
+                    k.trim().toUpperCase()
+                  )
+                );
+                return (
+                  <div className="space-y-1.5">
+                    <div
+                      className="font-bold text-[#78350f] uppercase"
+                      style={{ fontSize: 'clamp(9.5px, 1.1cqw, 11.5px)' }}
+                    >
+                      Pilih satu atau lebih jawaban yang benar:
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-[0.8cqw]">
+                      {question.options?.map((opt) => {
+                        const optUpper = opt.id.trim().toUpperCase();
+                        const isSelected = selectedOptionsMulti.includes(optUpper);
+                        const isCorrectOpt = keySet.has(optUpper);
+
+                        let buttonStyle =
+                          'bg-[#fff8eb]/80 hover:bg-[#fff3d6]/95 text-[#231004] border-[#a16207]/45 shadow-xs';
+                        if (phase === 'feedback') {
+                          if (isSelected && isCorrectOpt) {
+                            buttonStyle = 'bg-emerald-700 text-white border-emerald-900 shadow-md';
+                          } else if (isSelected && !isCorrectOpt) {
+                            buttonStyle = 'bg-red-700 text-white border-red-900 shadow-md';
+                          } else if (!isSelected && isCorrectOpt) {
+                            buttonStyle = 'bg-emerald-100 text-emerald-950 border-emerald-700 shadow-xs';
+                          } else {
+                            buttonStyle = 'bg-[#fff8eb]/55 text-[#451a03]/75 border-[#a16207]/25 opacity-85';
+                          }
+                        } else if (isSelected) {
+                          buttonStyle = 'bg-[#78350f] text-[#fef3c7] border-[#451a03] shadow-md';
+                        }
+
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            disabled={isLocked}
+                            onClick={() => {
+                              if (isLocked) return;
+                              sounds.playClick();
+                              setSelectedOptionsMulti((prev) =>
+                                prev.includes(optUpper)
+                                  ? prev.filter((x) => x !== optUpper)
+                                  : [...prev, optUpper]
+                              );
+                              setErrorMessage('');
+                            }}
+                            className={`text-left px-3 py-2 sm:py-2.5 rounded-xl border-2 transition-all flex items-start gap-2.5 ${
+                              isLocked ? 'cursor-default' : 'cursor-pointer'
+                            } ${buttonStyle}`}
+                          >
+                            {isSelected ? (
+                              <CheckSquare className="w-5 h-5 shrink-0 mt-0.5" />
+                            ) : (
+                              <Square className="w-5 h-5 shrink-0 mt-0.5 opacity-75" />
+                            )}
+                            <span
+                              className="font-bold pt-0.5 leading-snug break-words min-w-0 flex-1"
+                              style={{ fontSize: 'clamp(11px, 1.35cqw, 14.5px)' }}
+                            >
+                              {opt.id}. {opt.text}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* 1c. Benar / Salah */}
+              {question.type === 'true_false' && (() => {
+                const chosenBool = normalizeTrueFalseValue(selectedOption);
+                const keyBool =
+                  typeof question.correctBoolean === 'boolean'
+                    ? question.correctBoolean
+                    : normalizeTrueFalseValue(question.correctAnswer);
+                return (
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    {([
+                      { label: 'BENAR', val: true },
+                      { label: 'SALAH', val: false },
+                    ] as const).map((item) => {
+                      const isSelected = chosenBool === item.val;
+                      const isKey = keyBool === item.val;
+                      let btnClass =
+                        'bg-[#fff8eb]/85 hover:bg-[#fff3d6] text-[#231004] border-[#a16207]/50';
+                      if (phase === 'feedback') {
+                        if (isSelected && resultIsCorrect === true) {
+                          btnClass = 'bg-emerald-700 text-white border-emerald-900 shadow-md';
+                        } else if (isSelected && resultIsCorrect === false) {
+                          btnClass = 'bg-red-700 text-white border-red-900 shadow-md';
+                        } else if (isKey && resultIsCorrect === false) {
+                          btnClass = 'bg-emerald-100 text-emerald-950 border-emerald-700';
+                        } else {
+                          btnClass = 'bg-[#fff8eb]/55 text-[#451a03]/70 border-[#a16207]/25';
+                        }
+                      } else if (isSelected) {
+                        btnClass = 'bg-[#78350f] text-[#fef3c7] border-[#451a03] shadow-md';
+                      }
+
+                      return (
+                        <button
+                          key={item.label}
+                          type="button"
+                          disabled={isLocked}
+                          onClick={() => {
+                            if (isLocked) return;
+                            sounds.playClick();
+                            setSelectedOption(item.val ? 'Benar' : 'Salah');
+                            setErrorMessage('');
+                          }}
+                          className={`py-3 px-4 rounded-xl border-2 font-black tracking-wide transition-all flex items-center justify-center gap-2 ${
+                            isLocked ? 'cursor-default' : 'cursor-pointer'
+                          } ${btnClass}`}
+                          style={{ fontSize: 'clamp(12px, 1.5cqw, 16px)' }}
+                        >
+                          {item.val ? (
+                            <CheckCircle2 className="w-4 h-4 shrink-0" />
+                          ) : (
+                            <XCircle className="w-4 h-4 shrink-0" />
+                          )}
+                          <span>{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+
+              {/* 1d. Menjodohkan (Matching Pairs) */}
+              {question.type === 'matching' && (
+                <div className="space-y-2">
+                  <div
+                    className="font-bold text-[#78350f] uppercase"
+                    style={{ fontSize: 'clamp(9.5px, 1.1cqw, 11.5px)' }}
+                  >
+                    Pasangkan pernyataan kiri dengan jawaban yang tepat di sebelah kanan:
+                  </div>
+                  {(question.matchingPairs || []).map((pair, idx) => {
+                    const selectedRight = matchingSelections[pair.id] || '';
+                    const isPairCorrect =
+                      selectedRight.trim().toLowerCase() === pair.right.trim().toLowerCase();
+                    return (
+                      <div
+                        key={pair.id || idx}
+                        className={`p-2.5 rounded-xl border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-bold ${
+                          phase === 'feedback'
+                            ? isPairCorrect
+                              ? 'bg-emerald-100/90 border-emerald-700 text-emerald-950'
+                              : 'bg-red-100/90 border-red-700 text-red-950'
+                            : 'bg-[#fff8eb]/85 border-[#a16207]/45 text-[#231004]'
+                        }`}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <span className="text-[#78350f] mr-1.5">{idx + 1}.</span>
+                          <span>{pair.left}</span>
+                        </div>
+                        <div className="sm:w-1/2 flex items-center gap-2">
+                          <select
+                            value={selectedRight}
+                            disabled={isLocked}
+                            onChange={(e) => {
+                              if (isLocked) return;
+                              sounds.playClick();
+                              setMatchingSelections((prev) => ({
+                                ...prev,
+                                [pair.id]: e.target.value,
+                              }));
+                              setErrorMessage('');
+                            }}
+                            className="w-full px-2.5 py-1.5 rounded-lg border-2 border-[#a16207]/55 bg-[#fffaf0] text-[#231004] font-bold text-xs focus:outline-none"
+                          >
+                            <option value="">-- Pilih Pasangan --</option>
+                            {shuffledMatchingChoices.map((choice, cIdx) => (
+                              <option key={`${choice}-${cIdx}`} value={choice}>
+                                {choice}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
                     );
                   })}
                 </div>
@@ -720,10 +1065,65 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({
                       </div>
                     )}
 
+                    {!isPendingReview && question.type === 'multiple_choice_complex' && Array.isArray(question.correctAnswers) && question.correctAnswers.length > 0 && (
+                      <div
+                        className={`px-3 py-1.5 rounded-xl border font-extrabold ${
+                          resultIsCorrect === true
+                            ? 'bg-emerald-100/90 border-emerald-600/40 text-emerald-950'
+                            : 'bg-white/90 border-red-600/35 text-emerald-900'
+                        }`}
+                      >
+                        Jawaban benar:{' '}
+                        <span>
+                          {question.correctAnswers
+                            .map((id) => {
+                              const opt = question.options?.find(
+                                (o) => o.id.trim().toUpperCase() === id.trim().toUpperCase()
+                              );
+                              return opt ? `${opt.id}. ${opt.text}` : id;
+                            })
+                            .join(' | ')}
+                        </span>
+                      </div>
+                    )}
+
+                    {!isPendingReview && question.type === 'true_false' && (
+                      <div
+                        className={`px-3 py-1.5 rounded-xl border font-extrabold ${
+                          resultIsCorrect === true
+                            ? 'bg-emerald-100/90 border-emerald-600/40 text-emerald-950'
+                            : 'bg-white/90 border-red-600/35 text-emerald-900'
+                        }`}
+                      >
+                        Jawaban yang benar:{' '}
+                        <span>
+                          {(typeof question.correctBoolean === 'boolean'
+                            ? question.correctBoolean
+                            : normalizeTrueFalseValue(question.correctAnswer))
+                            ? 'BENAR'
+                            : 'SALAH'}
+                        </span>
+                      </div>
+                    )}
+
+                    {!isPendingReview && question.type === 'matching' && Array.isArray(question.matchingPairs) && question.matchingPairs.length > 0 && (
+                      <div
+                        className={`px-3 py-1.5 rounded-xl border font-extrabold ${
+                          resultIsCorrect === true
+                            ? 'bg-emerald-100/90 border-emerald-600/40 text-emerald-950'
+                            : 'bg-white/90 border-red-600/35 text-emerald-900'
+                        }`}
+                      >
+                        Pasangan yang benar:{' '}
+                        <span>
+                          {question.matchingPairs.map((p) => `${p.left} -> ${p.right}`).join(' | ')}
+                        </span>
+                      </div>
+                    )}
+
                     {!isPendingReview &&
                       question.type === 'short_answer' &&
-                      question.keywords &&
-                      question.keywords.length > 0 && (
+                      getShortAnswerAcceptedList(question).length > 0 && (
                         <div
                           className={`px-3 py-1.5 rounded-xl border font-extrabold ${
                             resultIsCorrect === true
@@ -731,11 +1131,11 @@ export const QuestionPanel: React.FC<QuestionPanelProps> = ({
                               : 'bg-white/90 border-red-600/35 text-emerald-900'
                           }`}
                         >
-                          {resultIsCorrect === true ? 'Jawabanmu: ' : 'Jawaban yang benar / kata kunci: '}
+                          {resultIsCorrect === true ? 'Jawabanmu: ' : 'Jawaban yang benar: '}
                           <span>
                             {resultIsCorrect === true
                               ? activeResult.answerText
-                              : question.keywords.join(', ')}
+                              : getShortAnswerAcceptedList(question).join(' / ')}
                           </span>
                         </div>
                       )}

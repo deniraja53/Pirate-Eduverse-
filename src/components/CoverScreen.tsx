@@ -105,22 +105,24 @@ export const CoverScreen: React.FC<CoverScreenProps> = ({
       />
 
       {/* Subtle bottom vignette overlay for high contrast of overlays without obscuring the artwork */}
-      <div className="absolute inset-0 bg-gradient-to-t from-slate-950/85 via-slate-950/20 to-slate-950/20 pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-t from-slate-950/85 via-slate-950/15 to-transparent pointer-events-none" />
 
       {/* TOP BAR OVERLAY: Sound toggle & Teacher portal shortcut */}
       <div className="absolute top-4 sm:top-6 left-4 sm:left-6 right-4 sm:right-6 flex items-center justify-between z-30 pointer-events-auto">
-        {/* Creator Badge & Sound Toggle */}
-        <div className="flex items-center gap-2">
-          <div className="px-3.5 py-1.5 rounded-xl bg-slate-950/70 backdrop-blur-xs border border-amber-500/40 text-amber-300 text-xs font-bold shadow-lg flex items-center gap-2">
-            <Anchor className="w-3.5 h-3.5 text-amber-400" />
+        {/* Creator Signature & Sound Toggle */}
+        <div className="flex items-center gap-2.5">
+          <div className="px-3 py-1.5 rounded-lg bg-[#0b1422]/85 border border-amber-500/40 text-amber-300 text-xs font-bold shadow-lg flex items-center gap-2">
+            <Anchor className="w-3.5 h-3.5 text-amber-400 shrink-0" />
             <span className="hidden sm:inline text-slate-300 font-normal">Karya:</span>
-            <span className="font-extrabold text-amber-400">Deni Raja99</span>
+            <span className="font-extrabold text-amber-300">Deni Raja99</span>
           </div>
 
           <button
+            type="button"
             onClick={toggleSound}
-            className="p-2 rounded-xl bg-slate-950/70 hover:bg-slate-900/90 backdrop-blur-xs border border-amber-500/40 text-amber-300 text-xs font-bold shadow-lg cursor-pointer transition-colors"
+            className="p-2 rounded-lg bg-[#0b1422]/85 hover:bg-[#132036] border border-amber-500/40 text-amber-300 text-xs font-bold shadow-lg cursor-pointer transition-colors"
             title={isMuted ? 'Nyalakan Suara' : 'Matikan Suara'}
+            aria-label={isMuted ? 'Nyalakan Efek Suara' : 'Matikan Efek Suara'}
           >
             {isMuted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4 text-amber-400" />}
           </button>
@@ -129,11 +131,12 @@ export const CoverScreen: React.FC<CoverScreenProps> = ({
         {/* Teacher Portal Button */}
         {onOpenTeacherDashboard && (
           <button
+            type="button"
             onClick={() => {
               sounds.playClick();
               onOpenTeacherDashboard();
             }}
-            className="px-3.5 py-1.5 rounded-xl bg-slate-950/75 hover:bg-slate-900 backdrop-blur-xs text-amber-300 text-xs font-bold border border-amber-500/40 shadow-xl flex items-center gap-2 cursor-pointer transition-transform hover:scale-105 active:scale-95"
+            className="px-3.5 py-2 rounded-lg bg-[#0b1422]/90 hover:bg-[#132036] text-amber-200 hover:text-amber-100 text-xs font-bold border border-amber-500/45 shadow-lg flex items-center gap-2 cursor-pointer transition-colors"
             title="Masuk ke Dashboard Guru"
           >
             <Shield className="w-3.5 h-3.5 text-amber-400" />
@@ -142,19 +145,15 @@ export const CoverScreen: React.FC<CoverScreenProps> = ({
         )}
       </div>
 
-      {/* 
-        2. BOTTOM LOADING INDICATOR OVERLAY (BOTTOM-LEFT / BOTTOM-CENTER)
-        Cinematic translucent progress bar directly overlaying the lower part of the cover.
-        Safely spaced from the bottom edge and does NOT collide with the bottom-right Mulai button.
-      */}
+      {/* BOTTOM LOADING INDICATOR OVERLAY */}
       <div className="absolute bottom-5 sm:bottom-7 left-4 sm:left-8 z-20 max-w-xs sm:max-w-md w-[calc(100%-170px)] sm:w-auto pointer-events-auto">
-        <div className="bg-slate-950/80 backdrop-blur-md border border-amber-500/40 p-2.5 sm:p-3 rounded-2xl shadow-2xl flex flex-col gap-1.5">
+        <div className="bg-[#0b1422]/90 border border-amber-500/45 p-3 rounded-xl shadow-2xl flex flex-col gap-1.5">
           <div className="flex justify-between items-center text-[11px] sm:text-xs font-bold">
-            <span className="text-amber-300 flex items-center gap-1.5 truncate">
+            <span className="text-amber-200 flex items-center gap-1.5 truncate">
               {isReady ? (
                 <>
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                  <span>Kapal & Peta Samudra Siap!</span>
+                  <span>Kapal &amp; Peta Samudra Siap!</span>
                 </>
               ) : (
                 <>
@@ -163,42 +162,36 @@ export const CoverScreen: React.FC<CoverScreenProps> = ({
                 </>
               )}
             </span>
-            <span className="text-amber-400 font-mono shrink-0 ml-2">{loadProgress}%</span>
+            <span className="text-amber-400 font-mono tabular-nums shrink-0 ml-2">{loadProgress}%</span>
           </div>
 
           {/* Smooth Horizontal Progress Bar */}
-          <div className="w-full h-2.5 sm:h-3 bg-slate-900 rounded-full border border-amber-600/50 p-0.5 overflow-hidden shadow-inner">
+          <div className="w-full h-2.5 bg-slate-900 rounded-full border border-amber-600/40 p-0.5 overflow-hidden">
             <div
               style={{ width: `${loadProgress}%` }}
               className={`h-full rounded-full transition-all duration-150 ${
-                isReady
-                  ? 'bg-gradient-to-r from-amber-500 via-emerald-400 to-emerald-500 shadow-emerald-500/40'
-                  : 'bg-gradient-to-r from-amber-600 via-amber-400 to-amber-300 shadow-amber-500/40'
+                isReady ? 'bg-emerald-500' : 'bg-amber-400'
               }`}
             />
           </div>
         </div>
       </div>
 
-      {/* 
-        3. TOMBOL MULAI DI POJOK KANAN BAWAH (BOTTOM-RIGHT CORNER)
-        Placed directly over the cover image at bottom-right with safe margins.
-        Disabled during asset load, active and bold when ready.
-        Zero Sparkles (✨).
-      */}
+      {/* BOTTOM-RIGHT PRIMARY CTA */}
       <div className="absolute bottom-5 sm:bottom-7 right-4 sm:right-8 z-30 pointer-events-auto">
         <button
+          type="button"
           onClick={handleStartGame}
           disabled={!isReady}
-          className={`py-3 sm:py-3.5 px-6 sm:px-9 rounded-2xl font-pirate font-bold text-base sm:text-xl tracking-wider shadow-2xl flex items-center gap-2.5 transition-all transform cursor-pointer ${
+          className={`py-3 sm:py-3.5 px-6 sm:px-9 rounded-xl font-pirate font-bold text-base sm:text-xl tracking-wider shadow-2xl flex items-center gap-2.5 transition-colors cursor-pointer ${
             isReady
-              ? 'bg-gradient-to-r from-amber-500 via-amber-600 to-amber-700 hover:from-amber-400 hover:to-amber-500 text-amber-950 border-2 border-amber-300 shadow-amber-500/40 hover:scale-105 active:scale-95'
-              : 'bg-slate-900/90 text-slate-500 border border-slate-700 cursor-not-allowed opacity-80 backdrop-blur-xs'
+              ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 border-2 border-amber-300'
+              : 'bg-slate-900/90 text-slate-500 border border-slate-700 cursor-not-allowed opacity-80'
           }`}
         >
-          <Play className={`w-4 h-4 sm:w-5 sm:h-5 ${isReady ? 'fill-current text-amber-950' : 'text-slate-500'}`} />
+          <Play className={`w-4 h-4 sm:w-5 sm:h-5 ${isReady ? 'fill-current text-slate-950' : 'text-slate-500'}`} />
           <span>{isReady ? 'MULAI' : 'MEMUAT'}</span>
-          {isReady && <ChevronRight className="w-4 h-4 sm:w-5 sm:h-5 text-amber-950" />}
+          {isReady && <ChevronRight className="w-4 h-4 sm:w-5 sm:h-5 text-slate-950" />}
         </button>
       </div>
     </div>

@@ -1,5 +1,5 @@
 /**
- * Manual Scoring Modal for Teachers (V4 Backend-Authoritative)
+ * Manual Scoring Modal for Teachers (Pixel Art Retro V11)
  * Persists manual grading score, feedback, grader name, and timestamp to server,
  * triggering live WebSocket updates and Google Sheets re-sync.
  * Created by Deni Raja99
@@ -7,7 +7,7 @@
 
 import React, { useState } from 'react';
 import { CheckCircle2, X, AlertTriangle } from 'lucide-react';
-import type { Question, StudentSession } from '../types/game';
+import { getQuestionTypeLabel, type Question, type StudentSession } from '../types/game';
 import { gradeStudentAnswerApi } from '../services/apiClient';
 import { sounds } from '../services/audio';
 
@@ -68,56 +68,67 @@ export const ManualScoringModal: React.FC<ManualScoringModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs select-none">
-      <div className="relative w-full max-w-lg bg-gradient-to-b from-slate-900 to-slate-950 border-2 border-amber-500/80 rounded-3xl p-6 text-white shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80">
+      <div className="px-card-gold relative w-full max-w-lg p-5 sm:p-6 text-[#f8f4ff]">
         {/* Header */}
-        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+        <div className="flex items-center justify-between pb-3 border-b-2 border-[#6d28d9]">
           <div>
-            <h3 className="text-lg font-bold font-pirate text-amber-300">
-              Koreksi Jawaban: {session.student.name} ({session.student.grade})
+            <h3 className="text-sm sm:text-base font-bold text-[#facc15]">
+              KOREKSI JAWABAN: {session.student.name} ({session.student.grade})
             </h3>
-            <p className="text-xs text-slate-400">
-              Peti #{question.number} •{' '}
-              {question.type === 'essay'
-                ? 'Soal Esai'
-                : question.type === 'short_answer'
-                ? 'Isian Singkat'
-                : 'Pilihan Ganda'}
+            <p className="text-xs text-[#cbb7eb] mt-0.5">
+              Peti #{question.number} • {getQuestionTypeLabel(question.type)}
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-white rounded-lg cursor-pointer"
+            className="px-btn px-btn-pink p-1.5 cursor-pointer"
+            aria-label="Tutup modal koreksi"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
         {/* Content */}
-        <div className="my-4 space-y-4 text-xs">
-          {/* Question Prompt */}
-          <div className="bg-slate-900/90 border border-slate-800 p-3.5 rounded-xl">
-            <span className="text-[10px] uppercase font-bold text-amber-400 block mb-1">
+        <div className="my-4 space-y-3.5 text-xs">
+          <div className="px-subcard p-3.5">
+            <span className="text-[10px] uppercase font-bold text-[#facc15] block mb-1">
               Pertanyaan Peti:
             </span>
-            <p className="text-slate-200 text-sm font-medium">{question.prompt}</p>
+            <p className="text-[#f8f4ff] text-sm font-medium">{question.prompt}</p>
             {question.essayRubric && (
-              <div className="mt-2 text-[11px] text-amber-300/80 bg-amber-950/40 p-2 rounded-lg border border-amber-700/30">
+              <div className="mt-2 text-[11px] text-[#facc15] bg-[#281647] p-2 border border-[#6d28d9]">
                 <strong>Rubrik Guru:</strong> {question.essayRubric}
               </div>
             )}
           </div>
 
-          {/* Student's Answer */}
-          <div className="bg-amber-950/20 border border-amber-600/40 p-3.5 rounded-xl">
-            <span className="text-[10px] uppercase font-bold text-amber-300 block mb-1">
+          <div className="px-subcard p-3.5 border-[#ec4899]">
+            <span className="text-[10px] uppercase font-bold text-[#f472b6] block mb-1">
               Jawaban Siswa:
             </span>
-            <div className="text-slate-100 text-sm font-medium whitespace-pre-wrap bg-slate-950/60 p-2.5 rounded-lg border border-slate-800">
-              {currentAnswer?.answerText || '(Siswa belum mengirimkan jawaban untuk peti ini)'}
+            <div className="text-[#f8f4ff] text-sm font-medium whitespace-pre-wrap bg-[#0d051a] p-2.5 border border-[#4c1d95]">
+              {(() => {
+                const raw = currentAnswer?.answerText;
+                if (!raw) return '(Siswa belum mengirimkan jawaban untuk peti ini)';
+                if (raw.startsWith('{') || raw.startsWith('[')) {
+                  try {
+                    const parsed = JSON.parse(raw);
+                    if (Array.isArray(parsed)) return parsed.join(', ');
+                    if (parsed && typeof parsed === 'object') {
+                      return Object.entries(parsed as Record<string, unknown>)
+                        .map(([k, v]) => `${k} -> ${String(v)}`)
+                        .join('\n');
+                    }
+                  } catch {
+                    // fall through
+                  }
+                }
+                return raw;
+              })()}
             </div>
-            <div className="mt-1.5 flex flex-wrap justify-between text-[10px] text-slate-400">
+            <div className="mt-1.5 flex flex-wrap justify-between text-[10px] text-[#cbb7eb]">
               <span>
                 Dikirim:{' '}
                 {currentAnswer?.answeredAt
@@ -133,11 +144,10 @@ export const ManualScoringModal: React.FC<ManualScoringModalProps> = ({
             </div>
           </div>
 
-          {/* Grading Form */}
           <form onSubmit={handleSave} className="space-y-3 pt-1">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="flex items-center justify-between gap-2 bg-slate-900 p-3 rounded-xl border border-slate-800">
-                <label className="font-bold text-amber-300 text-xs">
+              <div className="px-subcard flex items-center justify-between gap-2 p-3">
+                <label className="font-bold text-[#facc15] text-xs">
                   Nilai (Maks {question.points}):
                 </label>
                 <div className="flex items-center gap-1.5">
@@ -147,28 +157,28 @@ export const ManualScoringModal: React.FC<ManualScoringModalProps> = ({
                     max={question.points}
                     value={score}
                     onChange={(e) => setScore(Number(e.target.value))}
-                    className="w-16 px-2 py-1.5 bg-slate-950 border border-amber-500 rounded-lg text-amber-300 font-bold text-center text-sm focus:outline-none"
+                    className="px-input w-16 px-2 py-1.5 text-[#facc15] font-bold text-center text-sm"
                     required
                   />
-                  <span className="text-slate-400">/ {question.points}</span>
+                  <span className="text-[#cbb7eb]">/ {question.points}</span>
                 </div>
               </div>
 
-              <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
-                <label className="block text-[10px] font-bold text-slate-400 mb-0.5">
+              <div className="px-subcard p-2.5">
+                <label className="block text-[10px] font-bold text-[#cbb7eb] mb-0.5">
                   Nama Penilai (Guru):
                 </label>
                 <input
                   type="text"
                   value={gradedBy}
                   onChange={(e) => setGradedBy(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 px-2.5 py-1 rounded-lg text-xs text-white focus:outline-none focus:border-amber-400"
+                  className="px-input w-full px-2.5 py-1 text-xs"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block font-bold text-slate-300 text-xs mb-1">
+              <label className="block font-bold text-[#cbb7eb] text-xs mb-1">
                 Catatan / Masukan Guru untuk Siswa (Opsional):
               </label>
               <textarea
@@ -176,19 +186,19 @@ export const ManualScoringModal: React.FC<ManualScoringModalProps> = ({
                 onChange={(e) => setFeedback(e.target.value)}
                 rows={2}
                 placeholder="Contoh: Penjelasanmu sudah sangat baik dan lengkap!"
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white placeholder-slate-500 focus:outline-none focus:border-amber-400"
+                className="px-input w-full px-3 py-2 text-xs"
               />
             </div>
 
             {errorMsg && (
-              <div className="p-2.5 bg-red-950/80 border border-red-500 text-red-200 rounded-lg text-xs flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+              <div className="p-2.5 bg-red-950/90 border-2 border-[#ef4444] text-red-200 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-[#ef4444] shrink-0" />
                 <span>{errorMsg}</span>
               </div>
             )}
 
             {message && (
-              <div className="p-2 bg-emerald-950 border border-emerald-600 text-emerald-300 rounded-lg text-center text-xs font-bold">
+              <div className="p-2 bg-emerald-950/90 border-2 border-[#22c55e] text-emerald-200 text-center text-xs font-bold">
                 {message}
               </div>
             )}
@@ -197,14 +207,14 @@ export const ManualScoringModal: React.FC<ManualScoringModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-xl cursor-pointer"
+                className="px-btn px-btn-dark px-4 py-2 text-xs cursor-pointer"
               >
                 Batal
               </button>
               <button
                 type="submit"
                 disabled={isSaving || !currentAnswer}
-                className="px-5 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-amber-950 font-bold text-xs rounded-xl shadow-md cursor-pointer flex items-center gap-1.5"
+                className="px-btn px-btn-gold px-5 py-2 text-xs cursor-pointer flex items-center gap-1.5"
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>{isSaving ? 'Menyimpan...' : 'Simpan Nilai'}</span>

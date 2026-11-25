@@ -30,8 +30,13 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs select-none">
-      <div className="relative w-full max-w-sm bg-gradient-to-b from-amber-950 to-slate-950 border-2 border-amber-500/80 rounded-3xl p-6 sm:p-8 text-white shadow-2xl text-center">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Menu Jeda Permainan"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 select-none"
+    >
+      <div className="relative w-full max-w-sm bg-[#0b1422] border-2 border-amber-500/70 rounded-2xl p-6 sm:p-8 text-white shadow-2xl text-center">
         <h2 className="text-3xl font-extrabold font-pirate text-amber-400 tracking-wider mb-1">
           PERMAINAN DIJEDA
         </h2>
@@ -39,17 +44,19 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
 
         <div className="space-y-3">
           <button
+            type="button"
             onClick={() => {
               sounds.playClick();
               onResume();
             }}
-            className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-amber-950 font-bold text-sm font-cinzel uppercase shadow-md flex items-center justify-center gap-2 cursor-pointer transition-transform active:scale-95"
+            className="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm font-cinzel uppercase shadow-md flex items-center justify-center gap-2 cursor-pointer transition-colors"
           >
             <Play className="w-4 h-4 fill-current" />
             <span>Lanjutkan Petualangan</span>
           </button>
 
           <button
+            type="button"
             onClick={() => {
               sounds.playClick();
               onOpenInstructions();
@@ -61,6 +68,7 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={toggleSound}
             className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-amber-600/40 text-amber-200 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors"
           >
@@ -71,6 +79,7 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
           {confirmRestart ? (
             <div className="flex gap-2">
               <button
+                type="button"
                 onClick={() => {
                   sounds.playClick();
                   onRestart();
@@ -81,14 +90,16 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
                 Ya, Mulai Ulang
               </button>
               <button
+                type="button"
                 onClick={() => setConfirmRestart(false)}
-                className="py-2 px-3 rounded-xl bg-slate-800 text-slate-300 text-xs font-bold cursor-pointer"
+                className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
               >
                 Batal
               </button>
             </div>
           ) : (
             <button
+              type="button"
               onClick={() => {
                 sounds.playClick();
                 setConfirmRestart(true);
@@ -104,6 +115,7 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
           {confirmExit ? (
             <div className="flex gap-2">
               <button
+                type="button"
                 onClick={() => {
                   sounds.playClick();
                   onExitToMenu();
@@ -114,14 +126,16 @@ export const PauseMenu: React.FC<PauseMenuProps> = ({
                 Ya, Keluar ke Cover
               </button>
               <button
+                type="button"
                 onClick={() => setConfirmExit(false)}
-                className="py-2 px-3 rounded-xl bg-slate-800 text-slate-300 text-xs font-bold cursor-pointer"
+                className="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold cursor-pointer"
               >
                 Batal
               </button>
             </div>
           ) : (
             <button
+              type="button"
               onClick={() => {
                 sounds.playClick();
                 setConfirmExit(true);

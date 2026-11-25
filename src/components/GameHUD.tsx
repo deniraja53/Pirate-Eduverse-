@@ -22,13 +22,15 @@ import {
   Bug,
   Pause,
   FileCheck,
+  Lightbulb,
 } from 'lucide-react';
-import { ChestPlacementMeta, StudentSession, QuestionPackage } from '../types/game';
+import { ChestPlacementMeta, getQuestionTypeLabel, StudentSession, QuestionPackage } from '../types/game';
 import { GameConfig } from '../game/GameConfig';
 import { CHEST_ZONE_LABELS, getDistributedChestsForQuestions } from '../game/ChestConfig';
 import { RaycastDebugData } from '../game/MapEnvironment';
 import type { MiniMapLiveState } from '../game/MiniMapTypes';
 import { QuestMiniMap } from './QuestMiniMap';
+import { FullMapModal } from './FullMapModal';
 import { AudioStateSnapshot, sounds } from '../services/audio';
 
 interface GameHUDProps {
@@ -39,6 +41,9 @@ interface GameHUDProps {
   debugData?: RaycastDebugData | null;
   chestPlacements?: ChestPlacementMeta[];
   miniMapStateRef?: React.MutableRefObject<MiniMapLiveState | null>;
+  isFullMapOpen?: boolean;
+  onOpenFullMap?: () => void;
+  onCloseFullMap?: () => void;
   onPause: () => void;
   onFinishQuest: () => void;
   onOpenInstructions: () => void;
@@ -55,6 +60,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   debugData,
   chestPlacements = [],
   miniMapStateRef,
+  isFullMapOpen = false,
+  onOpenFullMap,
+  onCloseFullMap,
   onPause,
   onFinishQuest,
   onVirtualJoystickMove,
@@ -71,9 +79,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
   // Progress Calculations (strictly bound to active published questions)
   const totalChests = questionPackage.questions.length;
-  const activeQuestionIds = new Set(questionPackage.questions.map((q) => q.id));
-  const completedChestsCount = session.chestsCompleted.filter((id) =>
-    activeQuestionIds.has(id)
+  const completedChestsCount = questionPackage.questions.filter(
+    (q) => session.chestsCompleted.includes(q.id) || Boolean(session.answers?.[q.id])
   ).length;
   const uncompletedChestsCount = Math.max(totalChests - completedChestsCount, 0);
   const isAllCompleted = completedChestsCount >= totalChests && totalChests > 0;
@@ -179,11 +186,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             {/* Certificate Action if all chests completed */}
             {isAllCompleted && (
               <button
+                type="button"
                 onClick={() => {
                   sounds.playVictory();
                   onFinishQuest();
                 }}
-                className="py-2 px-3 sm:py-2.5 sm:px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-bold text-xs shadow-lg border border-emerald-300 flex items-center gap-1.5 cursor-pointer animate-bounce"
+                className="py-2 px-3 sm:py-2.5 sm:px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg border border-emerald-400/70 flex items-center gap-1.5 cursor-pointer transition-colors"
               >
                 <FileCheck className="w-4 h-4" />
                 <span className="hidden md:inline">Hasil &amp; Sertifikat</span>
@@ -192,8 +200,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
             {/* Pirate Soundtrack Quick Toggle (Independent from SFX) */}
             <button
+              type="button"
               onClick={toggleMusic}
-              className={`p-2 sm:p-2.5 rounded-xl bg-slate-950/80 hover:bg-slate-900 border shadow-xl cursor-pointer transition-colors backdrop-blur-xs flex items-center gap-1.5 ${
+              className={`p-2 sm:p-2.5 rounded-xl bg-[#0b1422]/85 hover:bg-[#132036] border shadow-xl cursor-pointer transition-colors flex items-center gap-1.5 ${
                 !audioState.musicEnabled
                   ? 'border-red-500/50 text-red-400'
                   : audioState.musicBlocked
@@ -214,8 +223,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
             {/* SFX Sound Mute/Unmute (Independent from Music) */}
             <button
+              type="button"
               onClick={toggleSound}
-              className="p-2 sm:p-2.5 rounded-xl bg-slate-950/80 hover:bg-slate-900 border border-amber-600/50 text-amber-300 shadow-xl cursor-pointer transition-colors backdrop-blur-xs"
+              className="p-2 sm:p-2.5 rounded-xl bg-[#0b1422]/85 hover:bg-[#132036] border border-amber-600/50 text-amber-300 shadow-xl cursor-pointer transition-colors"
               title={audioState.sfxMuted ? 'Nyalakan Efek Suara (SFX)' : 'Bisukan Efek Suara (SFX)'}
               aria-label={audioState.sfxMuted ? 'Nyalakan Efek Suara' : 'Bisukan Efek Suara'}
             >
@@ -224,35 +234,47 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
             {/* Pause Button */}
             <button
+              type="button"
               onClick={() => {
                 sounds.playClick();
                 onPause();
               }}
-              className="p-2 sm:p-2.5 rounded-xl bg-slate-950/80 hover:bg-slate-900 border border-amber-600/50 text-amber-300 shadow-xl cursor-pointer transition-colors backdrop-blur-xs"
+              className="p-2 sm:p-2.5 rounded-xl bg-[#0b1422]/85 hover:bg-[#132036] border border-amber-600/50 text-amber-300 shadow-xl cursor-pointer transition-colors"
               title="Menu Jeda (Pause)"
+              aria-label="Jeda Permainan"
             >
               <Pause className="w-4 h-4 sm:w-5 sm:h-5" />
             </button>
 
             {/* Settings Gear Button */}
             <button
+              type="button"
               onClick={() => {
                 sounds.playClick();
                 setIsSettingsOpen(!isSettingsOpen);
               }}
-              className={`p-2 sm:p-2.5 rounded-xl border shadow-xl cursor-pointer transition-all transform hover:scale-105 active:scale-95 backdrop-blur-xs ${
+              className={`p-2 sm:p-2.5 rounded-xl border shadow-xl cursor-pointer transition-colors ${
                 isSettingsOpen
-                  ? 'bg-amber-500 text-slate-950 border-white ring-2 ring-amber-400/50'
-                  : 'bg-slate-950/80 hover:bg-slate-900 border-amber-500/70 text-amber-300'
+                  ? 'bg-amber-500 text-slate-950 border-amber-200 ring-2 ring-amber-400/50'
+                  : 'bg-[#0b1422]/85 hover:bg-[#132036] border-amber-500/65 text-amber-300'
               }`}
               title="Pengaturan Game Terpadu"
+              aria-label="Buka Pengaturan Game"
             >
-              <Settings className={`w-4 h-4 sm:w-5 sm:h-5 ${isSettingsOpen ? 'animate-spin-slow' : ''}`} />
+              <Settings className="w-4 h-4 sm:w-5 sm:h-5" />
             </button>
           </div>
 
-          {/* Circular Tactical Quest Mini-Map directly beneath top-right controls */}
-          {miniMapStateRef && <QuestMiniMap miniMapStateRef={miniMapStateRef} />}
+          {/* Circular Tactical Quest Mini-Map directly beneath top-right controls (clickable for Full Map) */}
+          {miniMapStateRef && (
+            <QuestMiniMap
+              miniMapStateRef={miniMapStateRef}
+              onOpenFullMap={() => {
+                setIsSettingsOpen(false);
+                onOpenFullMap?.();
+              }}
+            />
+          )}
         </div>
       </div>
 
@@ -285,10 +307,15 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         Consolidates Kamera, Kontrol, Misi/Peti, Audio, and Developer Debug into ONE menu!
       */}
       {isSettingsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/65 backdrop-blur-xs pointer-events-auto select-none">
-          <div className="relative w-full max-w-2xl bg-slate-950/95 border-2 border-amber-500/80 rounded-3xl shadow-2xl overflow-hidden flex flex-col text-slate-200">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Pengaturan Game Pirate Academy"
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/70 pointer-events-auto select-none"
+        >
+          <div className="relative w-full max-w-2xl bg-[#0b1422] border-2 border-amber-500/70 rounded-2xl shadow-2xl overflow-hidden flex flex-col text-slate-200">
             {/* Modal Header */}
-            <div className="bg-gradient-to-r from-amber-950 to-slate-950 px-5 py-4 border-b border-amber-800/50 flex items-center justify-between">
+            <div className="bg-[#111c2d] px-5 py-4 border-b border-amber-500/30 flex items-center justify-between">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center font-bold">
                   <Settings className="w-4 h-4" />
@@ -304,12 +331,14 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </div>
 
               <button
+                type="button"
                 onClick={() => {
                   sounds.playClick();
                   setIsSettingsOpen(false);
                 }}
-                className="p-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white transition-colors cursor-pointer"
                 title="Tutup Pengaturan"
+                aria-label="Tutup Pengaturan"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -318,20 +347,22 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             {/* Modal Tabs */}
             <div className="flex items-center gap-1 border-b border-slate-800 px-4 pt-2 overflow-x-auto text-xs font-bold">
               <button
+                type="button"
                 onClick={() => setSettingsTab('camera')}
-                className={`py-2 px-3 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                className={`py-2 px-3 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                   settingsTab === 'camera'
                     ? 'border-amber-400 text-amber-300'
                     : 'border-transparent text-slate-400 hover:text-white'
                 }`}
               >
                 <Sliders className="w-3.5 h-3.5" />
-                <span>Kamera & Kecepatan</span>
+                <span>Kamera &amp; Kecepatan</span>
               </button>
 
               <button
+                type="button"
                 onClick={() => setSettingsTab('controls')}
-                className={`py-2 px-3 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                className={`py-2 px-3 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                   settingsTab === 'controls'
                     ? 'border-amber-400 text-amber-300'
                     : 'border-transparent text-slate-400 hover:text-white'
@@ -342,8 +373,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </button>
 
               <button
+                type="button"
                 onClick={() => setSettingsTab('chests')}
-                className={`py-2 px-3 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                className={`py-2 px-3 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                   settingsTab === 'chests'
                     ? 'border-amber-400 text-amber-300'
                     : 'border-transparent text-slate-400 hover:text-white'
@@ -354,8 +386,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </button>
 
               <button
+                type="button"
                 onClick={() => setSettingsTab('audio')}
-                className={`py-2 px-3 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                className={`py-2 px-3 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                   settingsTab === 'audio'
                     ? 'border-amber-400 text-amber-300'
                     : 'border-transparent text-slate-400 hover:text-white'
@@ -366,15 +399,16 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </button>
 
               <button
+                type="button"
                 onClick={() => setSettingsTab('debug')}
-                className={`py-2 px-3 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 ${
+                className={`py-2 px-3 border-b-2 transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                   settingsTab === 'debug'
                     ? 'border-emerald-400 text-emerald-300'
                     : 'border-transparent text-slate-400 hover:text-white'
                 }`}
               >
                 <Bug className="w-3.5 h-3.5" />
-                <span>Developer & Debug</span>
+                <span>Developer &amp; Debug</span>
               </button>
             </div>
 
@@ -493,8 +527,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                     </div>
                   </div>
 
-                  <div className="p-3 bg-amber-950/40 border border-amber-800/50 rounded-xl text-[11px] text-amber-200">
-                    💡 <strong>Tips Mobile:</strong> Gunakan virtual joystick di kiri bawah layar untuk mengarahkan langkah dan tombol <strong>Lompat</strong> serta <strong>[E]</strong> di kanan bawah.
+                  <div className="p-3 bg-amber-950/40 border border-amber-800/50 rounded-xl text-[11px] text-amber-200 flex items-start gap-2">
+                    <Lightbulb className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Tips Mobile:</strong> Gunakan virtual joystick di kiri bawah layar untuk mengarahkan langkah dan tombol <strong>Lompat</strong> serta <strong>[E]</strong> di kanan bawah.
+                    </span>
                   </div>
                 </div>
               )}
@@ -535,7 +572,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                               <div>
                                 <div className="font-bold text-white">{locName}</div>
                                 <div className="text-[10px] text-slate-400">
-                                  {CHEST_ZONE_LABELS[zoneType]} • {q.points} Poin • {q.type === 'multiple_choice' ? 'Pilihan Ganda' : q.type === 'short_answer' ? 'Isian Singkat' : 'Esai'}
+                                  {CHEST_ZONE_LABELS[zoneType]} • {q.points} Poin • {getQuestionTypeLabel(q.type)}
                                 </div>
                               </div>
                             </div>
@@ -767,19 +804,30 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             </div>
 
             {/* Modal Footer */}
-            <div className="px-5 py-3 bg-slate-950 border-t border-slate-800 flex justify-end">
+            <div className="px-5 py-3 bg-[#0b1422] border-t border-slate-800 flex justify-end">
               <button
+                type="button"
                 onClick={() => {
                   sounds.playClick();
                   setIsSettingsOpen(false);
                 }}
                 className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs transition-colors cursor-pointer"
               >
-                Selesai & Lanjutkan Petualangan
+                Selesai &amp; Lanjutkan Petualangan
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* 3.5 FULL PIRATE QUEST MAP MODAL */}
+      {isFullMapOpen && miniMapStateRef && onCloseFullMap && (
+        <FullMapModal
+          miniMapStateRef={miniMapStateRef}
+          totalQuestions={totalChests}
+          completedCount={completedChestsCount}
+          onClose={onCloseFullMap}
+        />
       )}
 
       {/* 
@@ -792,7 +840,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           onTouchStart={handleJoystickStart}
           onTouchMove={handleJoystickMove}
           onTouchEnd={handleJoystickEnd}
-          className="w-28 h-28 rounded-full bg-slate-950/60 border-2 border-amber-500/50 relative flex items-center justify-center touch-none backdrop-blur-xs shadow-2xl"
+          className="w-28 h-28 rounded-full bg-slate-950/70 border-2 border-amber-500/55 relative flex items-center justify-center touch-none shadow-2xl"
         >
           <div
             style={{
@@ -809,21 +857,24 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         {/* Action Buttons: Jump and Open Chest */}
         <div className="flex flex-col gap-3">
           <button
+            type="button"
             onTouchStart={(e) => {
               e.preventDefault();
               if (onVirtualJump) onVirtualJump();
             }}
-            className="w-14 h-14 rounded-full bg-slate-950/70 border-2 border-amber-400 text-amber-300 font-bold text-xs flex items-center justify-center active:scale-95 shadow-xl cursor-pointer"
+            className="w-14 h-14 rounded-full bg-slate-950/75 border-2 border-amber-400 text-amber-300 font-bold text-xs flex items-center justify-center active:scale-95 shadow-xl cursor-pointer"
           >
             Lompat
           </button>
 
           <button
+            type="button"
             onTouchStart={(e) => {
               e.preventDefault();
               if (onVirtualInteract) onVirtualInteract();
             }}
-            className="w-16 h-16 rounded-full bg-gradient-to-tr from-amber-600 to-amber-500 border-2 border-amber-200 text-white font-pirate font-black text-2xl flex items-center justify-center active:scale-95 shadow-xl cursor-pointer"
+            aria-label="Buka Peti"
+            className="w-16 h-16 rounded-full bg-amber-500 border-2 border-amber-200 text-slate-950 font-pirate font-black text-2xl flex items-center justify-center active:scale-95 shadow-xl cursor-pointer"
           >
             E
           </button>

@@ -9,6 +9,7 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { Anchor } from 'lucide-react';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { GameConfig } from './GameConfig';
 import {
@@ -22,7 +23,7 @@ import { CharacterController, CharacterDiagnostics } from './CharacterController
 import { ThirdPersonCamera } from './ThirdPersonCamera';
 import { TreasureChest } from './TreasureChest';
 import { getDistributedChestsForQuestions } from './ChestConfig';
-import { ChestPlacementMeta, QuestionPackage, StudentSession } from '../types/game';
+import { ChestPlacementMeta, QuestionPackage, SavedPlayerPose, StudentSession } from '../types/game';
 import {
   DEFAULT_PLAYABLE_WORLD_BOUNDS,
   type MiniMapLiveState,
@@ -50,6 +51,10 @@ interface PirateGameCanvasProps {
   virtualJoystickVector?: { x: number; y: number };
   virtualInteractTrigger?: number;
   virtualJumpTrigger?: number;
+  activeQuestionId?: string | null;
+  coinRewardTrigger?: { questionId: string; nonce: number } | null;
+  initialRestorePose?: SavedPlayerPose | null;
+  onPlayerPoseChange?: (pose: SavedPlayerPose, immediateSync?: boolean) => void;
 }
 
 export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
@@ -67,6 +72,10 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
   virtualJoystickVector,
   virtualInteractTrigger,
   virtualJumpTrigger,
+  activeQuestionId = null,
+  coinRewardTrigger = null,
+  initialRestorePose = null,
+  onPlayerPoseChange,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
   const [nearestChest, setNearestChest] = useState<TreasureChest | null>(null);
@@ -75,6 +84,10 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
     completed: number;
     total: number;
   } | null>(null);
+
+  const initialActiveQuestionsCount = questionPackage.questions.filter(
+    (q) => q.isActive !== false
+  ).length;
 
   // Mutable state across animation loop
   const stateRef = useRef({
@@ -89,15 +102,19 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
     prevPointerX: 0,
     prevPointerY: 0,
     isPaused: false,
+    isOpeningChest: false,
+    openPanelTimerId: null as number | null,
     nearestChest: null as TreasureChest | null,
     chests: [] as TreasureChest[],
     onOpenChest,
     onFinishQuest,
     onSceneReady,
     onSceneError,
+    onPlayerPoseChange,
+    initialRestorePose,
     miniMapStateRef,
     completedCount: session.chestsCompleted.length,
-    totalCount: questionPackage.questions.length,
+    totalCount: initialActiveQuestionsCount,
     finishTriggered: false,
     finishTriggerY: 0.98,
     wasInFinishZone: false,
@@ -108,6 +125,7 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
     mapEnvironment: null as MapEnvironment | null,
     virtualJoystickVector: { x: 0, y: 0 },
   });
+  const prevActiveQuestionIdRef = useRef<string | null>(null);
 
   const syncMiniMapSnapshot = () => {
     const target = stateRef.current.miniMapStateRef?.current;
@@ -131,6 +149,7 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
         chestId: ch.chestId,
         questionId: ch.questionId,
         questionNumber: ch.question.number,
+        locationName: ch.question.locationName,
         x: cx,
         z: cz,
         active: ch.active,
@@ -148,25 +167,76 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
     target.ready = true;
   };
 
+  const triggerChestOpenInteraction = (chest: TreasureChest) => {
+    if (stateRef.current.isPaused || stateRef.current.isOpeningChest || chest.status === 'locked') {
+      return;
+    }
+    stateRef.current.isOpeningChest = true;
+    stateRef.current.keys.forward = false;
+    stateRef.current.keys.backward = false;
+    stateRef.current.keys.left = false;
+    stateRef.current.keys.right = false;
+    stateRef.current.keys.jump = false;
+
+    sounds.playChestOpen();
+    chest.triggerOpenEffect();
+
+    if (stateRef.current.openPanelTimerId !== null) {
+      window.clearTimeout(stateRef.current.openPanelTimerId);
+    }
+    stateRef.current.openPanelTimerId = window.setTimeout(() => {
+      stateRef.current.openPanelTimerId = null;
+      stateRef.current.isOpeningChest = false;
+      stateRef.current.onOpenChest(chest.questionId);
+    }, 360);
+  };
+
   // Sync stateRef with props
   useEffect(() => {
     stateRef.current.isPaused = isPaused;
+    if (isPaused) {
+      stateRef.current.keys.forward = false;
+      stateRef.current.keys.backward = false;
+      stateRef.current.keys.left = false;
+      stateRef.current.keys.right = false;
+      stateRef.current.keys.jump = false;
+      const charCtrl = stateRef.current.characterController;
+      const camCtrl = stateRef.current.cameraController;
+      if (charCtrl && stateRef.current.mapEnvironment?.diagnostics.status === 'loaded') {
+        stateRef.current.onPlayerPoseChange?.(
+          {
+            x: charCtrl.group.position.x,
+            y: charCtrl.group.position.y,
+            z: charCtrl.group.position.z,
+            rotationY: charCtrl.currentRotationY,
+            cameraYaw: camCtrl?.yaw,
+            cameraPitch: camCtrl?.pitch,
+            updatedAt: new Date().toISOString(),
+          },
+          true
+        );
+      }
+    }
     stateRef.current.onOpenChest = onOpenChest;
     stateRef.current.onFinishQuest = onFinishQuest;
     stateRef.current.onSceneReady = onSceneReady;
     stateRef.current.onSceneError = onSceneError;
+    stateRef.current.onPlayerPoseChange = onPlayerPoseChange;
+    stateRef.current.initialRestorePose = initialRestorePose;
     stateRef.current.miniMapStateRef = miniMapStateRef;
     stateRef.current.completedCount = session.chestsCompleted.length;
-    stateRef.current.totalCount = questionPackage.questions.length;
+    stateRef.current.totalCount = questionPackage.questions.filter((q) => q.isActive !== false).length;
   }, [
     isPaused,
     onOpenChest,
     onFinishQuest,
     onSceneReady,
     onSceneError,
+    onPlayerPoseChange,
+    initialRestorePose,
     miniMapStateRef,
     session.chestsCompleted.length,
-    questionPackage.questions.length,
+    questionPackage.questions,
   ]);
 
   useEffect(() => {
@@ -194,32 +264,60 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
     });
   }, [gameConfig]);
 
-  // Sync chest completion status from session
+  // Sync chest completion status from session (answers OR chestsCompleted marks GREEN)
   useEffect(() => {
+    const activeQs = questionPackage.questions.filter((q) => q.isActive !== false);
     stateRef.current.chests.forEach((chest) => {
-      const isCompleted = session.chestsCompleted.includes(chest.questionId);
+      const isCompleted =
+        session.chestsCompleted.includes(chest.questionId) ||
+        Boolean(session.answers?.[chest.questionId]);
       if (isCompleted) {
         chest.setStatus('completed');
       } else if (questionPackage.isSequential) {
         const currentNum = chest.question.number;
-        const allCompletedBefore = questionPackage.questions
+        const allCompletedBefore = activeQs
           .filter((q) => q.number < currentNum)
-          .every((q) => session.chestsCompleted.includes(q.id));
+          .every(
+            (q) =>
+              session.chestsCompleted.includes(q.id) ||
+              Boolean(session.answers?.[q.id])
+          );
         chest.setStatus(allCompletedBefore ? 'available' : 'locked');
       } else {
         chest.setStatus('available');
       }
     });
     syncMiniMapSnapshot();
-  }, [session.chestsCompleted, questionPackage.isSequential, questionPackage.questions]);
+  }, [session.chestsCompleted, session.answers, questionPackage.isSequential, questionPackage.questions]);
+
+  // Close chest lid smoothly if QuestionPanel was closed without submitting an answer
+  useEffect(() => {
+    const prevId = prevActiveQuestionIdRef.current;
+    prevActiveQuestionIdRef.current = activeQuestionId;
+
+    if (prevId && prevId !== activeQuestionId) {
+      const isAnswered =
+        session.chestsCompleted.includes(prevId) || Boolean(session.answers?.[prevId]);
+      if (!isAnswered) {
+        const prevChest = stateRef.current.chests.find((c) => c.questionId === prevId);
+        prevChest?.triggerCloseEffect();
+      }
+    }
+  }, [activeQuestionId, session.chestsCompleted, session.answers]);
+
+  // Trigger 3D gold coin fountain ONLY after authoritative server confirmation of a correct answer
+  useEffect(() => {
+    if (!coinRewardTrigger) return;
+    const chest = stateRef.current.chests.find(
+      (c) => c.questionId === coinRewardTrigger.questionId
+    );
+    chest?.triggerCoinRewardEffect();
+  }, [coinRewardTrigger]);
 
   // Handle virtual interact trigger
   useEffect(() => {
     if (virtualInteractTrigger && stateRef.current.nearestChest && !isPaused) {
-      if (stateRef.current.nearestChest.status !== 'locked') {
-        sounds.playChestOpen();
-        stateRef.current.onOpenChest(stateRef.current.nearestChest.questionId);
-      }
+      triggerChestOpenInteraction(stateRef.current.nearestChest);
     }
   }, [virtualInteractTrigger, isPaused]);
 
@@ -271,9 +369,10 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
     scene.background = new THREE.Color(0x38bdf8); // Sky blue
     scene.fog = new THREE.FogExp2(0x38bdf8, 0.0035); // Extended view distance for 750m adventure trail
 
-    // Studio Environment
+    // Studio Environment (capture render target for full GPU disposal on unmount)
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
-    scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+    const envRenderTarget = pmremGenerator.fromScene(new RoomEnvironment(), 0.04);
+    scene.environment = envRenderTarget.texture;
     pmremGenerator.dispose();
 
     // Directional Sunlight
@@ -332,11 +431,13 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
     const finishEmbarkRing = createFinishEmbarkRing();
     scene.add(finishEmbarkRing);
 
-    // 8. Distribute Question Chests organically across 4 zones from START to FINISH
-    const distributedWaypoints = getDistributedChestsForQuestions(questionPackage.questions.length);
+    // 8. Distribute Active Question Chests organically across 4 zones from START to FINISH
+    const activeQuestions = questionPackage.questions.filter((q) => q.isActive !== false);
+    const distributedWaypoints = getDistributedChestsForQuestions(activeQuestions.length);
     const chestsList: TreasureChest[] = [];
+    const chestCollidersPool: ChestCollisionVolume[] = [];
 
-    questionPackage.questions.forEach((q, idx) => {
+    activeQuestions.forEach((q, idx) => {
       const mapping = questionPackage.chestMappings?.find((m) => m.questionId === q.id);
       const waypoint = distributedWaypoints[idx] || distributedWaypoints[distributedWaypoints.length - 1];
       const pos: [number, number, number] = [
@@ -354,23 +455,39 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
         locationName: mapping?.locationName || q.locationName || waypoint.name,
       };
 
+      const chestId = mapping?.chestId || `chest-${String(idx + 1).padStart(2, '0')}`;
+      const isActiveChest = mapping?.active ?? true;
       const chest = new TreasureChest(enhancedQuestion, pos, {
-        chestId: mapping?.chestId || `chest-${String(idx + 1).padStart(2, '0')}`,
+        chestId,
         zoneType: resolvedZoneType,
         interactionRadius: resolvedRadius,
-        active: mapping?.active ?? true,
+        active: isActiveChest,
       });
       chest.setDebugMode(Boolean(config.debugMode));
 
-      if (session.chestsCompleted.includes(q.id)) {
+      const isAlreadyDone =
+        session.chestsCompleted.includes(q.id) || Boolean(session.answers?.[q.id]);
+      if (isAlreadyDone) {
         chest.setStatus('completed');
-      } else if (questionPackage.isSequential && idx > 0) {
-        chest.setStatus('locked');
+      } else if (questionPackage.isSequential) {
+        const allPrevDone = activeQuestions
+          .slice(0, idx)
+          .every((pq) => session.chestsCompleted.includes(pq.id) || Boolean(session.answers?.[pq.id]));
+        chest.setStatus(allPrevDone ? 'available' : 'locked');
       } else {
         chest.setStatus('available');
       }
 
       chestsList.push(chest);
+      if (isActiveChest) {
+        chestCollidersPool.push({
+          id: chestId,
+          x: pos[0],
+          y: pos[1],
+          z: pos[2],
+          radius: 0.76,
+        });
+      }
       scene.add(chest.group);
     });
     stateRef.current.chests = chestsList;
@@ -381,12 +498,10 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
 
     const mapLoadPromise = mapEnv.loadMap().then(() => {
       if (sceneDisposed) return;
-      const spawnGround = mapEnv.getGroundHeight(config.spawnPosition.x, config.spawnPosition.z);
-      charController.group.position.y = spawnGround.y;
-      cameraController.resetToCharacter(charController.group.position);
 
       const occupiedPositions: Array<{ x: number; z: number }> = [];
       const validationReports: ChestPlacementMeta[] = [];
+      let poolIdx = 0;
 
       stateRef.current.chests.forEach((chest) => {
         const validation = mapEnv.validateChestPlacement(
@@ -397,9 +512,31 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
           occupiedPositions
         );
         chest.setValidatedPlacement(validation);
+        if (chest.active && chestCollidersPool[poolIdx]) {
+          chestCollidersPool[poolIdx].x = validation.position.x;
+          chestCollidersPool[poolIdx].y = validation.position.y;
+          chestCollidersPool[poolIdx].z = validation.position.z;
+          poolIdx++;
+        }
         occupiedPositions.push({ x: validation.position.x, z: validation.position.z });
         validationReports.push(validation);
       });
+
+      const restoreCandidate = stateRef.current.initialRestorePose;
+      if (restoreCandidate) {
+        const safePose = mapEnv.resolveSafePosition(restoreCandidate, chestCollidersPool);
+        charController.applyRestoredPose(safePose, restoreCandidate.rotationY);
+        if (typeof restoreCandidate.cameraYaw === 'number' && Number.isFinite(restoreCandidate.cameraYaw)) {
+          cameraController.yaw = restoreCandidate.cameraYaw;
+        }
+        if (typeof restoreCandidate.cameraPitch === 'number' && Number.isFinite(restoreCandidate.cameraPitch)) {
+          cameraController.pitch = Math.max(0.08, Math.min(1.15, restoreCandidate.cameraPitch));
+        }
+      } else {
+        const spawnGround = mapEnv.getGroundHeight(config.spawnPosition.x, config.spawnPosition.z);
+        charController.group.position.y = spawnGround.y;
+      }
+      cameraController.resetToCharacter(charController.group.position);
 
       syncMiniMapSnapshot();
 
@@ -484,9 +621,8 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
           break;
         case 'KeyE':
         case 'Enter':
-          if (stateRef.current.nearestChest && stateRef.current.nearestChest.status !== 'locked') {
-            sounds.playChestOpen();
-            stateRef.current.onOpenChest(stateRef.current.nearestChest.questionId);
+          if (stateRef.current.nearestChest) {
+            triggerChestOpenInteraction(stateRef.current.nearestChest);
           }
           break;
       }
@@ -554,13 +690,46 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
     let finishTimerId: number | null = null;
     let stepSoundTimer = 0;
     let diagUpdateTimer = 0;
+    let poseSampleTimer = 0;
+    let lastSampledX = Number.NaN;
+    let lastSampledZ = Number.NaN;
+    let lastSampledRot = Number.NaN;
     stateRef.current.finishTriggered = false;
     stateRef.current.wasInFinishZone = false;
     stateRef.current.lastFinishNoticeKey = '';
 
+    const emitPoseIfNeeded = (forceImmediate: boolean) => {
+      if (mapEnv.diagnostics.status !== 'loaded') return;
+      const pPos = charController.group.position;
+      const pRot = charController.currentRotationY;
+      const movedEnough =
+        Number.isNaN(lastSampledX) ||
+        Math.abs(pPos.x - lastSampledX) > 0.35 ||
+        Math.abs(pPos.z - lastSampledZ) > 0.35 ||
+        Math.abs(pRot - lastSampledRot) > 0.25;
+      if (!forceImmediate && !movedEnough) return;
+
+      lastSampledX = pPos.x;
+      lastSampledZ = pPos.z;
+      lastSampledRot = pRot;
+      stateRef.current.onPlayerPoseChange?.(
+        {
+          x: pPos.x,
+          y: pPos.y,
+          z: pPos.z,
+          rotationY: pRot,
+          cameraYaw: cameraController.yaw,
+          cameraPitch: cameraController.pitch,
+          updatedAt: new Date().toISOString(),
+        },
+        forceImmediate
+      );
+    };
+
     function tick() {
       const delta = Math.min(clock.getDelta(), 0.1);
       const elapsed = clock.elapsedTime;
+      const sharedChestTime = performance.now() * 0.003;
 
       if (!stateRef.current.isPaused) {
         // 10a. Direction vector calculation relative to horizontal camera orientation
@@ -594,22 +763,8 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
           };
         }
 
-        // 10b. Collect active solid chest cylinders & update Character Controller substep collision physics
-        const chestColliders: ChestCollisionVolume[] = [];
-        for (let i = 0; i < chestsList.length; i++) {
-          const ch = chestsList[i];
-          if (ch.active) {
-            chestColliders.push({
-              id: ch.chestId,
-              x: ch.group.position.x,
-              y: ch.group.position.y,
-              z: ch.group.position.z,
-              radius: 0.76,
-            });
-          }
-        }
-
-        charController.update(delta, normDir, false, chestColliders);
+        // 10b. Update Character Controller substep collision physics using pre-allocated chest colliders
+        charController.update(delta, normDir, false, chestCollidersPool);
 
         if (charController.currentSpeed > 0.5 && charController.isGrounded) {
           stepSoundTimer += delta;
@@ -639,20 +794,25 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
         const playerPos = charController.group.position;
         const currentNearest = stateRef.current.nearestChest;
 
-        chestsList.forEach((chest) => {
-          chest.update(delta);
-          if (!chest.active) return;
+        for (let i = 0; i < chestsList.length; i++) {
+          const chest = chestsList[i];
+          if (!chest.active) continue;
 
           const dy = Math.abs(playerPos.y - chest.group.position.y);
+          if (dy > 2.4) continue;
           const effectiveRadius =
             currentNearest === chest ? chest.interactionRadius + 0.3 : chest.interactionRadius;
-          const dist3D = playerPos.distanceTo(chest.group.position);
+          const dx = playerPos.x - chest.group.position.x;
+          if (dx > effectiveRadius || dx < -effectiveRadius) continue;
+          const dz = playerPos.z - chest.group.position.z;
+          if (dz > effectiveRadius || dz < -effectiveRadius) continue;
 
-          if (dist3D <= effectiveRadius && dy <= 2.4 && dist3D < closestDist) {
+          const dist3D = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (dist3D <= effectiveRadius && dist3D < closestDist) {
             closestDist = dist3D;
             closestChest = chest;
           }
-        });
+        }
 
         if (stateRef.current.nearestChest !== closestChest) {
           stateRef.current.nearestChest = closestChest;
@@ -695,6 +855,13 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
         }
         stateRef.current.wasInFinishZone = isInsideFinish;
 
+        // 10d-3. Throttled player pose persistence sampling (1Hz, zero per-frame allocation)
+        poseSampleTimer += delta;
+        if (poseSampleTimer >= 1.0) {
+          poseSampleTimer = 0;
+          emitPoseIfNeeded(false);
+        }
+
         // 10e. Periodic Diagnostics Update ONLY when Developer Debug Mode is enabled
         if (stateRef.current.config.debugMode) {
           diagUpdateTimer += delta;
@@ -707,11 +874,22 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
         }
       }
 
+      // Distance-culled chest updates & shadow casting (keeps nearby chests & active VFX smooth)
+      const pPos = charController.group.position;
+      for (let i = 0; i < chestsList.length; i++) {
+        const ch = chestsList[i];
+        const dx = pPos.x - ch.position.x;
+        const dz = pPos.z - ch.position.z;
+        const distSq = dx * dx + dz * dz;
+        ch.setCastShadow(distSq <= 55 * 55);
+        ch.update(delta, sharedChestTime, distSq);
+      }
+
       // Feed live player coordinates & yaw directly into mutable MiniMap ref (zero React re-renders)
       const mm = stateRef.current.miniMapStateRef?.current;
       if (mm) {
-        mm.playerX = charController.group.position.x;
-        mm.playerZ = charController.group.position.z;
+        mm.playerX = pPos.x;
+        mm.playerZ = pPos.z;
         mm.playerRotationY = charController.currentRotationY;
         mm.ready = true;
       }
@@ -724,17 +902,31 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
 
     // Cleanup on unmount
     return () => {
+      emitPoseIfNeeded(true);
       sceneDisposed = true;
       cancelAnimationFrame(frameId);
       if (finishTimerId !== null) {
         window.clearTimeout(finishTimerId);
       }
+      if (stateRef.current.openPanelTimerId !== null) {
+        window.clearTimeout(stateRef.current.openPanelTimerId);
+        stateRef.current.openPanelTimerId = null;
+      }
+      stateRef.current.isOpeningChest = false;
+      chestsList.forEach((chest) => chest.dispose());
+      disposeGroupResources(startGateGroup);
+      disposeGroupResources(finishMonumentGroup);
+      disposeGroupResources(finishEmbarkRing);
+      mapEnv.dispose();
+      charController.dispose();
+      envRenderTarget.dispose();
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('pointerdown', handlePointerDown);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
+      renderer.renderLists?.dispose();
       renderer.dispose();
       if (container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
@@ -743,7 +935,6 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
   }, [
     session.sessionId,
     questionPackage.id,
-    questionPackage.questions.map((q) => q.id).join(','),
   ]);
 
   return (
@@ -760,8 +951,8 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
       */}
       {nearestChest && !isPaused && (
         <div className="absolute top-[156px] sm:top-20 left-1/2 -translate-x-1/2 pointer-events-none z-20 max-w-[92vw]">
-          <div className="bg-slate-950/90 border-2 border-amber-500/80 px-5 sm:px-6 py-2.5 rounded-2xl shadow-2xl backdrop-blur-xs text-center flex items-center gap-3 animate-bounce">
-            <span className="w-9 h-9 rounded-full bg-amber-500 text-amber-950 font-pirate font-black text-xl flex items-center justify-center border border-amber-300 shrink-0">
+          <div className="bg-[#0b1422]/92 border-2 border-amber-500/80 px-5 sm:px-6 py-2.5 rounded-xl shadow-2xl text-center flex items-center gap-3">
+            <span className="w-9 h-9 rounded-full bg-amber-500 text-slate-950 font-pirate font-black text-xl flex items-center justify-center border border-amber-300 shrink-0">
               E
             </span>
             <div className="text-left min-w-0">
@@ -784,14 +975,15 @@ export const PirateGameCanvas: React.FC<PirateGameCanvasProps> = ({
       {finishZoneNotice && !isPaused && !nearestChest && (
         <div className="absolute top-[156px] sm:top-20 left-1/2 -translate-x-1/2 pointer-events-none z-20 max-w-md w-[90%]">
           <div
-            className={`px-5 py-3 rounded-2xl shadow-2xl backdrop-blur-xs border-2 text-center ${
+            className={`px-5 py-3 rounded-xl shadow-2xl border-2 text-center ${
               finishZoneNotice.ready
-                ? 'bg-emerald-950/90 border-emerald-400 text-emerald-100'
-                : 'bg-slate-950/90 border-amber-400 text-amber-100'
+                ? 'bg-emerald-950/92 border-emerald-400 text-emerald-100'
+                : 'bg-[#0b1422]/92 border-amber-400 text-amber-100'
             }`}
           >
-            <div className="text-xs font-extrabold uppercase tracking-wider text-amber-300 mb-0.5">
-              ⚓ Kapal FINISH • Dermaga Akhir
+            <div className="text-xs font-extrabold uppercase tracking-wider text-amber-300 mb-0.5 flex items-center justify-center gap-1.5">
+              <Anchor className="w-3.5 h-3.5 shrink-0" />
+              <span>Kapal FINISH · Dermaga Akhir</span>
             </div>
             <div className="text-xs sm:text-sm font-bold text-white">
               {finishZoneNotice.ready
@@ -976,4 +1168,20 @@ function createFinishEmbarkRing(): THREE.Group {
   ringGroup.add(new THREE.Mesh(innerGeo, innerMat));
 
   return ringGroup;
+}
+
+function disposeGroupResources(group: THREE.Group) {
+  group.traverse((node) => {
+    if ((node as THREE.Mesh).isMesh) {
+      const mesh = node as THREE.Mesh;
+      mesh.geometry?.dispose();
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      mats.forEach((mat) => {
+        if (!mat) return;
+        const std = mat as THREE.MeshStandardMaterial;
+        std.map?.dispose();
+        mat.dispose();
+      });
+    }
+  });
 }
