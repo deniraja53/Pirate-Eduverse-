@@ -9,6 +9,7 @@
  */
 
 import 'dotenv/config';
+import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import express, { type Request, type Response, type NextFunction } from 'express';
@@ -1291,18 +1292,78 @@ app.use('/api', (err: unknown, req: Request, res: Response, _next: NextFunction)
 // VITE / STATIC SERVING
 // ========================
 
+const DEFAULT_PUBLIC_ORIGIN =
+  'https://ais-pre-kvauz3ffvwjgw4vguqkyfw-518887689182.asia-southeast1.run.app';
+
+function resolvePublicOrigin(req: Request): string {
+  const envUrl = (
+    process.env.PUBLIC_APP_URL ||
+    process.env.SHARED_APP_URL ||
+    ''
+  ).trim();
+  if (envUrl.startsWith('https://')) {
+    return envUrl.replace(/\/+$/, '');
+  }
+
+  const forwardedHostRaw = req.headers['x-forwarded-host'] || req.headers.host || '';
+  const host = String(forwardedHostRaw).split(',')[0]?.trim().toLowerCase() || '';
+  const isValidPublicHost =
+    /^[a-z0-9.-]+(:\d+)?$/.test(host) &&
+    !host.startsWith('localhost') &&
+    !host.startsWith('127.0.0.1') &&
+    !host.startsWith('0.0.0.0') &&
+    !host.startsWith('ais-dev-');
+
+  if (isValidPublicHost) {
+    return `https://${host}`;
+  }
+
+  const appUrl = (process.env.APP_URL || '').trim();
+  if (appUrl.startsWith('https://') && !appUrl.includes('://ais-dev-')) {
+    return appUrl.replace(/\/+$/, '');
+  }
+
+  return DEFAULT_PUBLIC_ORIGIN;
+}
+
+function injectPublicOriginIntoHtml(html: string, req: Request): string {
+  const origin = resolvePublicOrigin(req);
+  if (origin === DEFAULT_PUBLIC_ORIGIN) {
+    return html;
+  }
+  return html.split(DEFAULT_PUBLIC_ORIGIN).join(origin);
+}
+
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
+    app.get('/', async (req, res, next) => {
+      try {
+        const indexPath = path.resolve(process.cwd(), 'index.html');
+        const rawHtml = fs.readFileSync(indexPath, 'utf-8');
+        const transformed = await vite.transformIndexHtml(req.originalUrl, rawHtml);
+        res
+          .status(200)
+          .type('text/html; charset=utf-8')
+          .send(injectPublicOriginIntoHtml(transformed, req));
+      } catch (err) {
+        next(err);
+      }
+    });
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distDir));
-    app.get('/{*splat}', (_req, res) => {
-      res.sendFile(path.join(distDir, 'index.html'));
+    const distIndexPath = path.join(distDir, 'index.html');
+    app.use(express.static(distDir, { index: false }));
+    app.get('/{*splat}', (req, res) => {
+      const rawHtml = fs.readFileSync(distIndexPath, 'utf-8');
+      res
+        .status(200)
+        .type('text/html; charset=utf-8')
+        .send(injectPublicOriginIntoHtml(rawHtml, req));
     });
   }
 
